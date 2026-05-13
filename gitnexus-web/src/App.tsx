@@ -228,6 +228,7 @@ const AppContent = () => {
             window.history.replaceState(null, '', url.toString());
           }
         }}
+        onOpenSettings={() => setSettingsPanelOpen(true)}
       />
     );
   }

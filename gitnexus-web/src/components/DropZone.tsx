@@ -13,6 +13,7 @@ import { RepoLanding } from './RepoLanding';
 
 interface DropZoneProps {
   onServerConnect?: (result: ConnectResult, serverUrl?: string) => void | Promise<void>;
+  onOpenSettings?: () => void;
 }
 
 // ── Crossfade wrapper ───────────────────────────────────────────────────────
@@ -133,7 +134,7 @@ function LoadingCard({ message }: { message: string }) {
 
 // ── DropZone ─────────────────────────────────────────────────────────────────
 
-export const DropZone = ({ onServerConnect }: DropZoneProps) => {
+export const DropZone = ({ onServerConnect, onOpenSettings }: DropZoneProps) => {
   const [error, setError] = useState<string | null>(null);
 
   // Backend polling for server detection
@@ -300,12 +301,15 @@ export const DropZone = ({ onServerConnect }: DropZoneProps) => {
         {displayPhase && (
           <Crossfade activeKey={displayPhase}>
             {displayPhase === 'onboarding' && <OnboardingGuide isPolling={isPolling} />}
-            {displayPhase === 'analyze' && <AnalyzeOnboarding onComplete={connectToRepo} />}
+            {displayPhase === 'analyze' && (
+              <AnalyzeOnboarding onComplete={connectToRepo} onOpenSettings={onOpenSettings} />
+            )}
             {displayPhase === 'landing' && (
               <RepoLanding
                 repos={detectedRepos}
                 onSelectRepo={connectToRepo}
                 onAnalyzeComplete={connectToRepo}
+                onOpenSettings={onOpenSettings}
               />
             )}
             {displayPhase === 'success' && <SuccessCard />}

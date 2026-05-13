@@ -89,9 +89,15 @@ interface RepoLandingProps {
   repos: BackendRepo[];
   onSelectRepo: (repoName: string) => void;
   onAnalyzeComplete: (repoName: string) => void;
+  onOpenSettings?: () => void;
 }
 
-export const RepoLanding = ({ repos, onSelectRepo, onAnalyzeComplete }: RepoLandingProps) => {
+export const RepoLanding = ({
+  repos,
+  onSelectRepo,
+  onAnalyzeComplete,
+  onOpenSettings,
+}: RepoLandingProps) => {
   return (
     <div className="relative animate-fade-in overflow-hidden rounded-3xl border border-border-default bg-surface p-7">
       {/* Ambient glows — mirrors OnboardingGuide aesthetic */}
@@ -135,7 +141,11 @@ export const RepoLanding = ({ repos, onSelectRepo, onAnalyzeComplete }: RepoLand
 
       {/* Analyzer form */}
       <div className="relative">
-        <RepoAnalyzer variant="onboarding" onComplete={onAnalyzeComplete} />
+        <RepoAnalyzer
+          variant="onboarding"
+          onComplete={onAnalyzeComplete}
+          onOpenSettings={onOpenSettings}
+        />
       </div>
 
       {/* Footer hint */}

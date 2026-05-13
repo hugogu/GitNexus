@@ -16,6 +16,7 @@ import {
   AlertCircle,
   Sparkles,
   Gitlab,
+  Settings,
 } from '@/lib/lucide-icons';
 import {
   startAnalyze,
@@ -151,9 +152,15 @@ export interface RepoAnalyzerProps {
   variant: 'onboarding' | 'sheet';
   onComplete: (repoName: string) => void;
   onCancel?: () => void;
+  onOpenSettings?: () => void;
 }
 
-export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProps) => {
+export const RepoAnalyzer = ({
+  variant,
+  onComplete,
+  onCancel,
+  onOpenSettings,
+}: RepoAnalyzerProps) => {
   const inputId = useId();
   const folderInputRef = useRef<HTMLInputElement>(null);
   const [mode, setMode] = useState<InputMode>('github');
@@ -237,7 +244,12 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
       jobIdRef.current = jobId;
       setPhase('analyzing');
 
-      const nameSource = mode === 'github' ? githubUrl.trim() : mode === 'gitlab' ? gitlabUrl.trim() : localPath.trim();
+      const nameSource =
+        mode === 'github'
+          ? githubUrl.trim()
+          : mode === 'gitlab'
+            ? gitlabUrl.trim()
+            : localPath.trim();
       const controller = streamAnalyzeProgress(
         jobId,
         (p) => setProgress(p),
@@ -389,8 +401,38 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
           </div>
           <p className="text-xs text-text-muted">
             Supports GitLab.com and self-hosted GitLab instances.
-            Configure token in Settings for private repositories.
           </p>
+
+          {/* Token configuration prompt */}
+          {(() => {
+            const settings = loadSettings();
+            const gitlab = settings.gitlab;
+            const isConfigured = gitlab?.enabled && gitlab?.token;
+            if (!isConfigured) {
+              return (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+                    <div className="flex-1">
+                      <p className="text-xs text-amber-200">
+                        Private GitLab repositories require an access token.
+                      </p>
+                      {onOpenSettings && (
+                        <button
+                          onClick={onOpenSettings}
+                          className="mt-2 flex items-center gap-1.5 rounded-md bg-amber-500/20 px-3 py-1.5 text-xs font-medium text-amber-300 transition-colors hover:bg-amber-500/30"
+                        >
+                          <Settings className="h-3 w-3" />
+                          Configure GitLab Token
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+            return null;
+          })()}
         </div>
       )}
 
