@@ -378,6 +378,7 @@ export async function cloneOrPull(
   url: string,
   targetDir: string,
   onProgress?: (progress: CloneProgress) => void,
+  token?: string,
 ): Promise<string> {
   // Containment barrier — inline with the canonical path.relative idiom so
   // CodeQL recognizes the sanitizer at every following filesystem and
@@ -401,6 +402,21 @@ export async function cloneOrPull(
   // preventing SSRF / blocked-host bypasses even when targetDir already exists.
   validateGitUrl(url);
 
+  // Inject authentication token into the URL if provided
+  let authenticatedUrl = url;
+  if (token) {
+    try {
+      const parsed = new URL(url);
+      // Use oauth2 token authentication for GitLab
+      parsed.username = 'oauth2';
+      parsed.password = token;
+      authenticatedUrl = parsed.toString();
+    } catch {
+      // If URL parsing fails, use the original URL
+      authenticatedUrl = url;
+    }
+  }
+
   const exists = await fs.access(path.join(safeTarget, '.git')).then(
     () => true,
     () => false,
@@ -412,11 +428,39 @@ export async function cloneOrPull(
     // whatever remote the dir was originally cloned from.
     await assertRemoteMatchesRequestedUrl(safeTarget, url);
     onProgress?.({ phase: 'pulling', message: 'Pulling latest changes...' });
+    // For pull operations, we need to temporarily set the remote URL with token
+    if (token) {
+      const remoteUrl = await getRemoteOriginUrl(safeTarget);
+      if (remoteUrl) {
+        try {
+          const parsed = new URL(remoteUrl);
+          parsed.username = 'oauth2';
+          parsed.password = token;
+          await runGit(['remote', 'set-url', 'origin', parsed.toString()], safeTarget);
+        } catch {
+          // If URL parsing fails, continue with original remote
+        }
+      }
+    }
     await runGit(['pull', '--ff-only'], safeTarget);
+    // Restore original remote URL without token
+    if (token) {
+      const remoteUrl = await getRemoteOriginUrl(safeTarget);
+      if (remoteUrl) {
+        try {
+          const parsed = new URL(remoteUrl);
+          parsed.username = '';
+          parsed.password = '';
+          await runGit(['remote', 'set-url', 'origin', parsed.toString()], safeTarget);
+        } catch {
+          // If URL parsing fails, leave as-is
+        }
+      }
+    }
   } else {
     await fs.mkdir(path.dirname(safeTarget), { recursive: true });
     onProgress?.({ phase: 'cloning', message: `Cloning ${url}...` });
-    await runGit(buildCloneArgs(url, safeTarget));
+    await runGit(buildCloneArgs(authenticatedUrl, safeTarget));
   }
 
   return safeTarget;

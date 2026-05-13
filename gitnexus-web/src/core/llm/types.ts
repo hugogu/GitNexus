@@ -120,6 +120,18 @@ export type ProviderConfig =
   | GLMConfig;
 
 /**
+ * GitLab configuration for repository access
+ */
+export interface GitLabConfig {
+  /** GitLab instance host (e.g., https://gitlab.com or https://gitlab.company.com) */
+  host: string;
+  /** Personal Access Token for authentication */
+  token: string;
+  /** Whether to use this token for all GitLab operations */
+  enabled: boolean;
+}
+
+/**
  * Stored settings (what goes to localStorage)
  */
 export interface LLMSettings {
@@ -136,6 +148,9 @@ export interface LLMSettings {
   openrouter?: Partial<Omit<OpenRouterConfig, 'provider'>>;
   minimax?: Partial<Omit<MiniMaxConfig, 'provider'>>;
   glm?: Partial<Omit<GLMConfig, 'provider'>>;
+
+  // GitLab Settings
+  gitlab?: Partial<GitLabConfig>;
 
   // Intelligent Clustering Settings
   intelligentClustering: boolean;
@@ -196,6 +211,11 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
     model: 'GLM-5',
     baseUrl: 'https://api.z.ai/api/coding/paas/v4',
     temperature: 0.1,
+  },
+  gitlab: {
+    host: 'https://gitlab.com',
+    token: '',
+    enabled: false,
   },
 };
 

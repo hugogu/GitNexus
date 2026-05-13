@@ -21,9 +21,10 @@ import { RepoAnalyzer } from './RepoAnalyzer';
 interface AnalyzeOnboardingProps {
   /** Called when analysis finishes and the repo is ready to load. */
   onComplete: (repoName: string) => void;
+  onOpenSettings?: () => void;
 }
 
-export const AnalyzeOnboarding = ({ onComplete }: AnalyzeOnboardingProps) => {
+export const AnalyzeOnboarding = ({ onComplete, onOpenSettings }: AnalyzeOnboardingProps) => {
   return (
     <div className="relative animate-fade-in overflow-hidden rounded-3xl border border-border-default bg-surface p-7">
       {/* Ambient glows — mirrors OnboardingGuide aesthetic */}
@@ -58,7 +59,11 @@ export const AnalyzeOnboarding = ({ onComplete }: AnalyzeOnboardingProps) => {
 
       {/* Analyzer form */}
       <div className="relative">
-        <RepoAnalyzer variant="onboarding" onComplete={onComplete} />
+        <RepoAnalyzer
+          variant="onboarding"
+          onComplete={onComplete}
+          onOpenSettings={onOpenSettings}
+        />
       </div>
 
       {/* Footer hint */}

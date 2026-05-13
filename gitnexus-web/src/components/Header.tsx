@@ -200,6 +200,10 @@ export const Header = ({
                         onAnalyzeComplete?.(repoName);
                       }}
                       onCancel={() => setShowAnalyzer(false)}
+                      onOpenSettings={() => {
+                        setIsRepoDropdownOpen(false);
+                        setSettingsPanelOpen(true);
+                      }}
                     />
                   </div>
                 ) : (

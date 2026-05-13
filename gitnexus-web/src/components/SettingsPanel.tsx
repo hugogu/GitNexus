@@ -927,6 +927,103 @@ export const SettingsPanel = ({
             </div>
           )}
 
+          {/* GitLab Settings */}
+          <div className="space-y-4 border-t border-border-subtle pt-4">
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-medium text-text-secondary">GitLab Repository Access</h3>
+              <span className="rounded bg-blue-500/10 px-2 py-0.5 text-xs text-blue-400">Optional</span>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  id="gitlab-enabled"
+                  checked={settings.gitlab?.enabled ?? false}
+                  onChange={(e) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      gitlab: { ...prev.gitlab!, enabled: e.target.checked },
+                    }))
+                  }
+                  className="h-4 w-4 rounded border-border-subtle text-accent focus:ring-accent"
+                />
+                <label htmlFor="gitlab-enabled" className="text-sm text-text-secondary">
+                  Enable GitLab authentication for private repositories
+                </label>
+              </div>
+
+              {settings.gitlab?.enabled && (
+                <div className="animate-fade-in space-y-4 pl-7">
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-2 text-sm font-medium text-text-secondary">
+                      <Server className="h-4 w-4" />
+                      GitLab Host
+                    </label>
+                    <input
+                      type="url"
+                      value={settings.gitlab?.host ?? 'https://gitlab.com'}
+                      onChange={(e) =>
+                        setSettings((prev) => ({
+                          ...prev,
+                          gitlab: { ...prev.gitlab!, host: e.target.value },
+                        }))
+                      }
+                      placeholder="https://gitlab.com"
+                      className="w-full rounded-xl border border-border-subtle bg-elevated px-4 py-3 font-mono text-sm text-text-primary transition-all outline-none placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
+                    />
+                    <p className="text-xs text-text-muted">
+                      Use https://gitlab.com for GitLab.com, or your self-hosted instance URL
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-2 text-sm font-medium text-text-secondary">
+                      <Key className="h-4 w-4" />
+                      Access Token
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showApiKey['gitlab'] ? 'text' : 'password'}
+                        value={settings.gitlab?.token ?? ''}
+                        onChange={(e) =>
+                          setSettings((prev) => ({
+                            ...prev,
+                            gitlab: { ...prev.gitlab!, token: e.target.value },
+                          }))
+                        }
+                        placeholder="glpat-xxxxxxxxxxxxxxxxxxxx"
+                        className="w-full rounded-xl border border-border-subtle bg-elevated px-4 py-3 pr-12 font-mono text-sm text-text-primary transition-all outline-none placeholder:text-text-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => toggleApiKeyVisibility('gitlab')}
+                        className="absolute top-1/2 right-3 -translate-y-1/2 p-1 text-text-muted transition-colors hover:text-text-primary"
+                      >
+                        {showApiKey['gitlab'] ? (
+                          <EyeOff className="h-4 w-4" />
+                        ) : (
+                          <Eye className="h-4 w-4" />
+                        )}
+                      </button>
+                    </div>
+                    <p className="text-xs text-text-muted">
+                      Create a token with read_repository scope at{' '}
+                      <a
+                        href="https://gitlab.com/-/profile/personal_access_tokens"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-accent hover:underline"
+                      >
+                        GitLab Access Tokens
+                      </a>
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* Privacy Note */}
           <div className="rounded-xl border border-border-subtle bg-elevated/50 p-4">
             <div className="flex gap-3">

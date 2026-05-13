@@ -1376,7 +1376,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // POST /api/analyze — start a new analysis job
   app.post('/api/analyze', createRouteLimiter({ limit: 10 }), async (req, res) => {
     try {
-      const { url: repoUrl, path: repoLocalPath, force, embeddings, dropEmbeddings } = req.body;
+      const { url: repoUrl, path: repoLocalPath, force, embeddings, dropEmbeddings, token } = req.body;
 
       // Input type validation
       if (repoUrl !== undefined && typeof repoUrl !== 'string') {
@@ -1435,7 +1435,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               jobManager.updateJob(job.id, {
                 progress: { phase: progress.phase, percent: 5, message: progress.message },
               });
-            });
+            }, token);
           }
 
           if (!targetPath) {

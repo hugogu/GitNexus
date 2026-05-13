@@ -59,6 +59,10 @@ const mergeWithDefaults = (parsed?: Partial<LLMSettings> | null): LLMSettings =>
     ...DEFAULT_LLM_SETTINGS.glm,
     ...parsed?.glm,
   },
+  gitlab: {
+    ...DEFAULT_LLM_SETTINGS.gitlab,
+    ...parsed?.gitlab,
+  },
 });
 
 const readSettings = (storage: Storage): Partial<LLMSettings> | null => {
