@@ -1,0 +1,53 @@
+# Docker Compose - Local Build
+# Build and run GitNexus from local source code with a single command:
+#
+#   docker compose -f docker-compose.local.yml up --build
+#
+# This uses the local Dockerfiles to build both the server and web UI
+# instead of pulling pre-built images from a registry.
+
+services:
+  gitnexus-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.cli
+    container_name: gitnexus-server-local
+    ports:
+      - '4747:4747'
+    volumes:
+      # Persist indexes, registry, and cloned repos across container restarts
+      - gitnexus-data:/data/gitnexus
+      # Mount workspace for indexing local repos (read-only for safety)
+      - ${WORKSPACE_DIR:-./workspace}:/workspace:ro
+    environment:
+      - GITNEXUS_HOME=/data/gitnexus
+      - NODE_ENV=production
+      - PORT=4747
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:4747/api/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  gitnexus-web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: gitnexus-web-local
+    ports:
+      - '4173:4173'
+    depends_on:
+      gitnexus-server:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:4173/']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  gitnexus-data:
