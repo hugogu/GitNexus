@@ -212,24 +212,31 @@ const AppContent = () => {
   // Render based on view mode
   if (viewMode === 'onboarding') {
     return (
-      <DropZone
-        onServerConnect={async (result, serverUrl) => {
-          // Refresh repo list before transitioning so it's ready in the header
-          const repos = await fetchRepos().catch(() => [] as BackendRepo[]);
-          setAvailableRepos(repos);
-          await handleServerConnect(result);
-          setProgress(null);
-          if (serverUrl) {
-            const base = normalizeServerUrl(serverUrl);
-            setServerBaseUrl(base);
-            // Add ?server= so F5 reconnects to this server
-            const url = new URL(window.location.href);
-            url.searchParams.set('server', base);
-            window.history.replaceState(null, '', url.toString());
-          }
-        }}
-        onOpenSettings={() => setSettingsPanelOpen(true)}
-      />
+      <>
+        <DropZone
+          onServerConnect={async (result, serverUrl) => {
+            // Refresh repo list before transitioning so it's ready in the header
+            const repos = await fetchRepos().catch(() => [] as BackendRepo[]);
+            setAvailableRepos(repos);
+            await handleServerConnect(result);
+            setProgress(null);
+            if (serverUrl) {
+              const base = normalizeServerUrl(serverUrl);
+              setServerBaseUrl(base);
+              // Add ?server= so F5 reconnects to this server
+              const url = new URL(window.location.href);
+              url.searchParams.set('server', base);
+              window.history.replaceState(null, '', url.toString());
+            }
+          }}
+          onOpenSettings={() => setSettingsPanelOpen(true)}
+        />
+        <SettingsPanel
+          isOpen={isSettingsPanelOpen}
+          onClose={() => setSettingsPanelOpen(false)}
+          onSettingsSaved={handleSettingsSaved}
+        />
+      </>
     );
   }
 
