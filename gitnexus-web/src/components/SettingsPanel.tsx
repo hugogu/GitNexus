@@ -862,15 +862,15 @@ export const SettingsPanel = ({
                 onToggleVisibility: () => toggleApiKeyVisibility('deepseek'),
               }}
               model={{
-                value: settings.deepseek?.model ?? 'deepseek-chat',
-                placeholder: 'e.g., deepseek-chat, deepseek-reasoner',
+                value: settings.deepseek?.model ?? 'deepseek-v4-flash',
+                placeholder: 'e.g., deepseek-v4-flash, deepseek-v4-pro, deepseek-chat',
                 onChange: (value) =>
                   setSettings((prev) => ({
                     ...prev,
                     deepseek: { ...prev.deepseek!, model: value },
                   })),
                 helperText:
-                  'Available: deepseek-chat (V3, default), deepseek-reasoner (R1, thinking mode)',
+                  'deepseek-v4-flash (default), deepseek-v4-pro, deepseek-chat (V3), deepseek-reasoner (R1)',
               }}
             >
               <p className="text-xs text-text-muted">

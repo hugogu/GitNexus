@@ -211,7 +211,7 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
   },
   deepseek: {
     apiKey: '',
-    model: 'deepseek-chat',
+    model: 'deepseek-v4-flash',
     temperature: 0.1,
   },
 };

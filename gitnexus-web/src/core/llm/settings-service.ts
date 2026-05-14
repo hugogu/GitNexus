@@ -423,7 +423,7 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
     case 'glm':
       return ['GLM-5', 'GLM-5-Turbo', 'GLM-4.7', 'GLM-4.5'];
     case 'deepseek':
-      return ['deepseek-chat', 'deepseek-reasoner'];
+      return ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'];
     default:
       return [];
   }

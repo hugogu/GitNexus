@@ -6,7 +6,7 @@
  */
 
 import { createReactAgent } from '@langchain/langgraph/prebuilt';
-import { SystemMessage } from '@langchain/core/messages';
+import { SystemMessage, AIMessage, type BaseMessage } from '@langchain/core/messages';
 import { ChatOpenAI, AzureChatOpenAI } from '@langchain/openai';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { ChatAnthropic } from '@langchain/anthropic';
@@ -127,81 +127,88 @@ GOOD: A["User Data"] --> B["Process and Save"]
 `;
 
 /**
- * DeepSeek reasoning_content tracker.
+ * DeepSeek reasoning_content passthrough.
  *
- * DeepSeek thinking-mode models (e.g. deepseek-reasoner) return a
- * `reasoning_content` field alongside `content` in assistant messages.
- * The API requires this field to be passed back on subsequent requests
- * (400 error otherwise). LangChain's completions converter preserves
- * reasoning_content on inbound AIMessages but does NOT pass it through
- * on outbound conversion. This store tracks reasoning_content per
- * assistant content string and a custom fetch injects it before the
- * request reaches the DeepSeek API.
+ * DeepSeek thinking-mode models return a `reasoning_content` field alongside
+ * `content` in assistant messages. The API requires this field to be passed
+ * back on subsequent requests (400 error otherwise).
+ *
+ * LangChain's completions converter preserves reasoning_content on inbound
+ * AIMessages (`additional_kwargs.reasoning_content`) but does NOT pass it
+ * through on outbound conversion. We fix this by patching the ChatOpenAI
+ * completions instance:
+ *
+ *   1. Before the converter runs, we save the original LangChain messages
+ *      (which have reasoning_content in their additional_kwargs).
+ *   2. After the converter produces mapped OpenAI params, we inject
+ *      reasoning_content into assistant message params by matching the
+ *      message index (1:1 mapping for non-audio models like DeepSeek).
+ *
+ * The inbound direction needs no fix — LangChain already extracts
+ * reasoning_content from API responses into AIMessage.additional_kwargs.
  */
-const deepseekReasoningStore = new Map<string, string>();
+const patchDeepSeekCompletions = (chatModel: ChatOpenAI): void => {
+  const completions = (chatModel as any).completions;
+  if (!completions) return;
 
-/**
- * Build a custom fetch that intercepts DeepSeek API calls to inject
- * reasoning_content into outgoing assistant messages and extract it
- * from incoming responses.
- */
-const buildDeepSeekFetch = (): typeof globalThis.fetch => {
-  const { fetch: originalFetch } = globalThis;
-  if (!originalFetch) {
-    console.warn('[GitNexus] fetch not available, DeepSeek reasoning passthrough disabled');
-    return async (input: RequestInfo | URL, init?: RequestInit) => {
-      throw new Error('fetch not available');
-    };
-  }
+  // Shared mutable slot: set by _streamResponseChunks / _generate before the
+  // converter runs, read by completionWithRetry after the converter has mapped
+  // the messages.
+  let currentOriginalMessages: BaseMessage[] | null = null;
 
-  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-
-    // Inject reasoning_content into outgoing requests
-    if (init?.body && typeof init.body === 'string' && url.includes('/chat/completions')) {
-      try {
-        const body = JSON.parse(init.body);
-        if (Array.isArray(body.messages)) {
-          body.messages = body.messages.map((msg: Record<string, unknown>) => {
-            if (msg.role === 'assistant' && typeof msg.content === 'string') {
-              const stored = deepseekReasoningStore.get(msg.content);
-              if (stored) {
-                return { ...msg, reasoning_content: stored };
-              }
-            }
-            return msg;
-          });
-          init = { ...init, body: JSON.stringify(body) };
-        }
-      } catch (_) {
-        // If body parsing fails, pass through unchanged
-      }
+  // ----- _streamResponseChunks (streaming path) -----
+  const origStreamChunks = completions._streamResponseChunks.bind(completions);
+  completions._streamResponseChunks = async function* (
+    this: any,
+    messages: BaseMessage[],
+    options: any,
+    runManager: any,
+  ) {
+    currentOriginalMessages = messages;
+    try {
+      yield* origStreamChunks(messages, options, runManager);
+    } finally {
+      currentOriginalMessages = null;
     }
+  };
 
-    const response = await originalFetch(input, init);
+  // ----- _generate (non-streaming path, fallback) -----
+  const origGenerate = completions._generate.bind(completions);
+  completions._generate = async function (
+    this: any,
+    messages: BaseMessage[],
+    options: any,
+    runManager: any,
+  ) {
+    currentOriginalMessages = messages;
+    try {
+      return await origGenerate(messages, options, runManager);
+    } finally {
+      currentOriginalMessages = null;
+    }
+  };
 
-    // Extract reasoning_content from responses
-    if (url.includes('/chat/completions') && response.ok) {
-      const cloned = response.clone();
-      try {
-        const data = await cloned.json();
-        const message = data.choices?.[0]?.message;
-        const content: string = message?.content ?? '';
-        const reasoningContent: string | undefined = message?.reasoning_content;
-        if (reasoningContent && content) {
-          deepseekReasoningStore.set(content, reasoningContent);
-          // Limit store size to prevent unbounded growth
-          if (deepseekReasoningStore.size > 50) {
-            const firstKey = deepseekReasoningStore.keys().next().value;
-            if (firstKey !== undefined) deepseekReasoningStore.delete(firstKey);
+  // ----- completionWithRetry (the actual API call) -----
+  const origCompletionWithRetry = completions.completionWithRetry.bind(completions);
+  completions.completionWithRetry = async function (this: any, request: any, requestOptions: any) {
+    if (request.messages && currentOriginalMessages) {
+      request = {
+        ...request,
+        messages: request.messages.map((mappedMsg: Record<string, unknown>, i: number) => {
+          if (mappedMsg.role !== 'assistant' || i >= currentOriginalMessages!.length) {
+            return mappedMsg;
           }
-        }
-      } catch (_) {
-        // Response parsing failure is not critical
-      }
+          const orig = currentOriginalMessages![i];
+          if (!AIMessage.isInstance(orig)) return mappedMsg;
+          const rc: string | undefined = orig.additional_kwargs?.reasoning_content as
+            | string
+            | undefined;
+          if (!rc) return mappedMsg;
+          return { ...mappedMsg, reasoning_content: rc };
+        }),
+      };
     }
-
-    return response;
+    return origCompletionWithRetry(request, requestOptions);
   };
 };
 
@@ -352,18 +359,19 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
         throw new Error('DeepSeek API key is required but was not provided');
       }
 
-      return new ChatOpenAI({
+      const model = new ChatOpenAI({
         apiKey: deepseekConfig.apiKey,
         modelName: deepseekConfig.model,
         temperature: deepseekConfig.temperature ?? 0.1,
         maxTokens: deepseekConfig.maxTokens,
         configuration: {
           apiKey: deepseekConfig.apiKey,
-          baseURL: 'https://api.deepseek.com/v1',
-          fetch: buildDeepSeekFetch(),
+          baseURL: 'https://api.deepseek.com',
         },
         streaming: true,
       });
+      patchDeepSeekCompletions(model);
+      return model;
     }
 
     default:
