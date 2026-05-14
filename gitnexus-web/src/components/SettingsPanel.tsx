@@ -338,6 +338,7 @@ export const SettingsPanel = ({
     'openrouter',
     'minimax',
     'glm',
+    'deepseek',
   ];
 
   return (
@@ -429,7 +430,9 @@ export const SettingsPanel = ({
                                 ? '⚡'
                                 : provider === 'glm'
                                   ? '🔮'
-                                  : '☁️'}
+                                  : provider === 'deepseek'
+                                    ? '🐋'
+                                    : '☁️'}
                   </div>
                   <span className="font-medium">{getProviderDisplayName(provider)}</span>
                 </button>
@@ -838,6 +841,43 @@ export const SettingsPanel = ({
                 helperText: 'Available: MiniMax-M2.5 (default), MiniMax-M2.5-highspeed (faster)',
               }}
             />
+          )}
+
+          {/* DeepSeek Settings */}
+          {settings.activeProvider === 'deepseek' && (
+            <ProviderConfigCard
+              title="DeepSeek"
+              apiKey={{
+                value: settings.deepseek?.apiKey ?? '',
+                placeholder: 'Enter your DeepSeek API key',
+                helperText: 'Get your API key from',
+                helperLink: 'https://platform.deepseek.com/api_keys',
+                helperLinkLabel: 'DeepSeek Platform',
+                isVisible: !!showApiKey['deepseek'],
+                onChange: (value) =>
+                  setSettings((prev) => ({
+                    ...prev,
+                    deepseek: { ...prev.deepseek!, apiKey: value },
+                  })),
+                onToggleVisibility: () => toggleApiKeyVisibility('deepseek'),
+              }}
+              model={{
+                value: settings.deepseek?.model ?? 'deepseek-chat',
+                placeholder: 'e.g., deepseek-chat, deepseek-reasoner',
+                onChange: (value) =>
+                  setSettings((prev) => ({
+                    ...prev,
+                    deepseek: { ...prev.deepseek!, model: value },
+                  })),
+                helperText:
+                  'Available: deepseek-chat (V3, default), deepseek-reasoner (R1, thinking mode)',
+              }}
+            >
+              <p className="text-xs text-text-muted">
+                Compatible via OpenAI API format. The deepseek-reasoner model uses thinking mode and
+                requires round-tripping reasoning content.
+              </p>
+            </ProviderConfigCard>
           )}
 
           {/* GLM Settings */}

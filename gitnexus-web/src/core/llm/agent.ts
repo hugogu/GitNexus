@@ -23,6 +23,7 @@ import type {
   OpenRouterConfig,
   MiniMaxConfig,
   GLMConfig,
+  DeepSeekConfig,
   AgentStreamChunk,
 } from './types';
 import { type CodebaseContext, buildDynamicSystemPrompt } from './context-builder';
@@ -124,6 +125,86 @@ When generating diagrams:
 BAD:  A[User's Data] --> B(Process & Save)
 GOOD: A["User Data"] --> B["Process and Save"]
 `;
+
+/**
+ * DeepSeek reasoning_content tracker.
+ *
+ * DeepSeek thinking-mode models (e.g. deepseek-reasoner) return a
+ * `reasoning_content` field alongside `content` in assistant messages.
+ * The API requires this field to be passed back on subsequent requests
+ * (400 error otherwise). LangChain's completions converter preserves
+ * reasoning_content on inbound AIMessages but does NOT pass it through
+ * on outbound conversion. This store tracks reasoning_content per
+ * assistant content string and a custom fetch injects it before the
+ * request reaches the DeepSeek API.
+ */
+const deepseekReasoningStore = new Map<string, string>();
+
+/**
+ * Build a custom fetch that intercepts DeepSeek API calls to inject
+ * reasoning_content into outgoing assistant messages and extract it
+ * from incoming responses.
+ */
+const buildDeepSeekFetch = (): typeof globalThis.fetch => {
+  const { fetch: originalFetch } = globalThis;
+  if (!originalFetch) {
+    console.warn('[GitNexus] fetch not available, DeepSeek reasoning passthrough disabled');
+    return async (input: RequestInfo | URL, init?: RequestInit) => {
+      throw new Error('fetch not available');
+    };
+  }
+
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+    // Inject reasoning_content into outgoing requests
+    if (init?.body && typeof init.body === 'string' && url.includes('/chat/completions')) {
+      try {
+        const body = JSON.parse(init.body);
+        if (Array.isArray(body.messages)) {
+          body.messages = body.messages.map((msg: Record<string, unknown>) => {
+            if (msg.role === 'assistant' && typeof msg.content === 'string') {
+              const stored = deepseekReasoningStore.get(msg.content);
+              if (stored) {
+                return { ...msg, reasoning_content: stored };
+              }
+            }
+            return msg;
+          });
+          init = { ...init, body: JSON.stringify(body) };
+        }
+      } catch (_) {
+        // If body parsing fails, pass through unchanged
+      }
+    }
+
+    const response = await originalFetch(input, init);
+
+    // Extract reasoning_content from responses
+    if (url.includes('/chat/completions') && response.ok) {
+      const cloned = response.clone();
+      try {
+        const data = await cloned.json();
+        const message = data.choices?.[0]?.message;
+        const content: string = message?.content ?? '';
+        const reasoningContent: string | undefined = message?.reasoning_content;
+        if (reasoningContent && content) {
+          deepseekReasoningStore.set(content, reasoningContent);
+          // Limit store size to prevent unbounded growth
+          if (deepseekReasoningStore.size > 50) {
+            const firstKey = deepseekReasoningStore.keys().next().value;
+            if (firstKey !== undefined) deepseekReasoningStore.delete(firstKey);
+          }
+        }
+      } catch (_) {
+        // Response parsing failure is not critical
+      }
+    }
+
+    return response;
+  };
+};
+
 export const createChatModel = (config: ProviderConfig): BaseChatModel => {
   switch (config.provider) {
     case 'openai': {
@@ -259,6 +340,27 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
         configuration: {
           apiKey: glmConfig.apiKey,
           baseURL: glmConfig.baseUrl ?? 'https://api.z.ai/api/coding/paas/v4',
+        },
+        streaming: true,
+      });
+    }
+
+    case 'deepseek': {
+      const deepseekConfig = config as DeepSeekConfig;
+
+      if (!deepseekConfig.apiKey || deepseekConfig.apiKey.trim() === '') {
+        throw new Error('DeepSeek API key is required but was not provided');
+      }
+
+      return new ChatOpenAI({
+        apiKey: deepseekConfig.apiKey,
+        modelName: deepseekConfig.model,
+        temperature: deepseekConfig.temperature ?? 0.1,
+        maxTokens: deepseekConfig.maxTokens,
+        configuration: {
+          apiKey: deepseekConfig.apiKey,
+          baseURL: 'https://api.deepseek.com/v1',
+          fetch: buildDeepSeekFetch(),
         },
         streaming: true,
       });

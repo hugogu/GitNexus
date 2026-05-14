@@ -17,7 +17,8 @@ export type LLMProvider =
   | 'ollama'
   | 'openrouter'
   | 'minimax'
-  | 'glm';
+  | 'glm'
+  | 'deepseek';
 
 /**
  * Base configuration shared by all providers
@@ -107,6 +108,15 @@ export interface GLMConfig extends BaseProviderConfig {
 }
 
 /**
+ * DeepSeek configuration — OpenAI-compatible API
+ */
+export interface DeepSeekConfig extends BaseProviderConfig {
+  provider: 'deepseek';
+  apiKey: string;
+  model: string; // e.g., 'deepseek-chat', 'deepseek-reasoner'
+}
+
+/**
  * Union type for all provider configurations
  */
 export type ProviderConfig =
@@ -117,7 +127,8 @@ export type ProviderConfig =
   | OllamaConfig
   | OpenRouterConfig
   | MiniMaxConfig
-  | GLMConfig;
+  | GLMConfig
+  | DeepSeekConfig;
 
 /**
  * Stored settings (what goes to localStorage)
@@ -136,6 +147,7 @@ export interface LLMSettings {
   openrouter?: Partial<Omit<OpenRouterConfig, 'provider'>>;
   minimax?: Partial<Omit<MiniMaxConfig, 'provider'>>;
   glm?: Partial<Omit<GLMConfig, 'provider'>>;
+  deepseek?: Partial<Omit<DeepSeekConfig, 'provider'>>;
 
   // Intelligent Clustering Settings
   intelligentClustering: boolean;
@@ -195,6 +207,11 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
     apiKey: '',
     model: 'GLM-5',
     baseUrl: 'https://api.z.ai/api/coding/paas/v4',
+    temperature: 0.1,
+  },
+  deepseek: {
+    apiKey: '',
+    model: 'deepseek-chat',
     temperature: 0.1,
   },
 };
