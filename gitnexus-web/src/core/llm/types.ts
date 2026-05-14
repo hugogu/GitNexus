@@ -236,6 +236,8 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'tool';
   content: string;
+  /** DeepSeek thinking-mode reasoning_content that must be round-tripped */
+  reasoningContent?: string;
   /** @deprecated Use steps instead for proper ordering */
   toolCalls?: ToolCallInfo[];
   /** Ordered steps: reasoning, tool calls, and final content interleaved */
@@ -265,6 +267,8 @@ export interface AgentStreamChunk {
   reasoning?: string;
   /** Final answer content (streamed token by token) */
   content?: string;
+  /** DeepSeek reasoning_content for next-turn round-trip */
+  reasoningContent?: string;
   /** Tool call information */
   toolCall?: ToolCallInfo;
   /** Error message */

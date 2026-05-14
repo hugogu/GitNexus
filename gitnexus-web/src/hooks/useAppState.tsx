@@ -666,6 +666,9 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       const history: AgentMessage[] = [...chatMessages, userMessage].map((m) => ({
         role: m.role === 'tool' ? 'assistant' : m.role,
         content: m.content,
+        ...(m.role === 'assistant' && m.reasoningContent
+          ? { reasoning_content: m.reasoningContent }
+          : {}),
       }));
 
       // Create placeholder for assistant response
@@ -675,6 +678,9 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       // Keep toolCalls for backwards compat and currentToolCalls state
       const toolCallsForMessage: ToolCallInfo[] = [];
       let stepCounter = 0;
+
+      // Track reasoning_content for DeepSeek thinking-mode round-trip
+      let assistantReasoningContent: string | undefined;
 
       // Helper to update the message with current steps
       const updateMessage = () => {
@@ -691,6 +697,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
             id: assistantMessageId,
             role: 'assistant' as const,
             content,
+            reasoningContent: assistantReasoningContent,
             steps: [...stepsForMessage],
             toolCalls: [...toolCallsForMessage],
             timestamp: existing?.timestamp ?? Date.now(),
@@ -973,6 +980,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
               break;
 
             case 'done':
+              assistantReasoningContent = chunk.reasoningContent;
               // Finalize the assistant message - just call updateMessage one more time
               scheduleMessageUpdate();
               break;

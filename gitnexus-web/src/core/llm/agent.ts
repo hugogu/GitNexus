@@ -6,7 +6,7 @@
  */
 
 import { createReactAgent } from '@langchain/langgraph/prebuilt';
-import { SystemMessage, type BaseMessage } from '@langchain/core/messages';
+import { SystemMessage, HumanMessage, AIMessage, type BaseMessage } from '@langchain/core/messages';
 import { ChatOpenAI, AzureChatOpenAI } from '@langchain/openai';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { ChatAnthropic } from '@langchain/anthropic';
@@ -482,6 +482,7 @@ export const createGraphRAGAgent = (
 export interface AgentMessage {
   role: 'user' | 'assistant';
   content: string;
+  reasoning_content?: string;
 }
 
 /**
@@ -497,10 +498,19 @@ export async function* streamAgentResponse(
   messages: AgentMessage[],
 ): AsyncGenerator<AgentStreamChunk> {
   try {
-    const formattedMessages = messages.map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
+    // Build proper LangChain messages so additional_kwargs (including
+    // reasoning_content) are preserved for the outbound converter patch.
+    const formattedMessages = messages.map((m) => {
+      if (m.role === 'user') {
+        return new HumanMessage(m.content);
+      }
+      return new AIMessage({
+        content: m.content,
+        ...(m.reasoning_content
+          ? { additional_kwargs: { reasoning_content: m.reasoning_content } }
+          : {}),
+      });
+    });
 
     // Use BOTH modes: 'values' for structure, 'messages' for token streaming
     const stream = await agent.stream({ messages: formattedMessages }, {
@@ -519,6 +529,8 @@ export async function* streamAgentResponse(
     // Anything before the first tool call should be treated as "reasoning/narration"
     // so the UI can show the Cursor-like loop: plan → tool → update → tool → answer.
     let hasSeenToolCallThisTurn = false;
+    // Track the last set of messages for reasoning_content extraction
+    let lastStepMessages: any[] | null = null;
 
     for await (const event of stream) {
       // Events come as [streamMode, data] tuples when using multiple modes
@@ -637,6 +649,7 @@ export async function* streamAgentResponse(
       // Handle 'values' mode - state snapshots for structure
       if (mode === 'values' && data?.messages) {
         const stepMessages = data.messages || [];
+        lastStepMessages = stepMessages;
 
         // Process new messages for tool calls/results we might have missed
         for (let i = lastProcessedMsgCount; i < stepMessages.length; i++) {
@@ -694,7 +707,23 @@ export async function* streamAgentResponse(
     if (import.meta.env.DEV) {
       console.log('✅ Stream completed normally, yielding done');
     }
-    yield { type: 'done' };
+
+    // Extract reasoning_content from the last assistant message for
+    // DeepSeek thinking-mode round-tripping on the next turn.
+    let reasoningContent: string | undefined;
+    if (lastStepMessages) {
+      for (let i = lastStepMessages.length - 1; i >= 0; i--) {
+        const msg = lastStepMessages[i];
+        const ak = (msg as any).additional_kwargs;
+        if (ak && typeof ak === 'object' && typeof ak.reasoning_content === 'string') {
+          reasoningContent = ak.reasoning_content as string;
+          console.warn('[deepseek] captured reasoning_content length:', reasoningContent.length);
+          break;
+        }
+      }
+    }
+
+    yield { type: 'done', reasoningContent };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // DEBUG: Stream error
