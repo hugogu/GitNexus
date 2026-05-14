@@ -6,7 +6,13 @@
  */
 
 import { createReactAgent } from '@langchain/langgraph/prebuilt';
-import { SystemMessage, HumanMessage, AIMessage, type BaseMessage } from '@langchain/core/messages';
+import {
+  SystemMessage,
+  HumanMessage,
+  AIMessage,
+  ToolMessage,
+  type BaseMessage,
+} from '@langchain/core/messages';
 import { ChatOpenAI, AzureChatOpenAI } from '@langchain/openai';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { ChatAnthropic } from '@langchain/anthropic';
@@ -25,6 +31,8 @@ import type {
   GLMConfig,
   DeepSeekConfig,
   AgentStreamChunk,
+  AgentHistoryMessage,
+  AgentToolCall,
 } from './types';
 import { type CodebaseContext, buildDynamicSystemPrompt } from './context-builder';
 import { DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENROUTER_BASE_URL } from '../../config/ui-constants';
@@ -134,27 +142,30 @@ GOOD: A["User Data"] --> B["Process and Save"]
  * back on subsequent requests (400 error otherwise).
  *
  * LangChain's completions converter preserves reasoning_content on inbound
- * AIMessages (`additional_kwargs.reasoning_content`) but does NOT pass it
- * through on outbound conversion. We fix this by patching the ChatOpenAI
- * completions instance:
- *
- *   1. Before the converter runs, we save the original LangChain messages
- *      (which have reasoning_content in their additional_kwargs).
- *   2. After the converter produces mapped OpenAI params, we inject
- *      reasoning_content into assistant message params by matching the
- *      message index (1:1 mapping for non-audio models like DeepSeek).
- *
- * The inbound direction needs no fix — LangChain already extracts
- * reasoning_content from API responses into AIMessage.additional_kwargs.
+ * AIMessages (`additional_kwargs.reasoning_content`) but does NOT reliably
+ * pass it through on outbound conversion, especially around tool-calling
+ * turns. We fix this by patching the ChatOpenAI completions instance to
+ * rebuild the outbound `messages` array directly from the original
+ * LangChain messages right before the API call.
  */
 const patchDeepSeekCompletions = (chatModel: ChatOpenAI): void => {
+  const modelWithInternals = chatModel as any;
+  if (!modelWithInternals.__deepseekWithConfigPatched) {
+    const originalWithConfig = chatModel.withConfig;
+    modelWithInternals.__deepseekWithConfigPatched = true;
+    modelWithInternals.withConfig = function (this: ChatOpenAI, config: any) {
+      const nextModel = originalWithConfig.call(this, config) as ChatOpenAI;
+      patchDeepSeekCompletions(nextModel);
+      return nextModel;
+    };
+  }
+
   const completions = (chatModel as any).completions;
-  if (!completions) return;
-  console.warn('[deepseek] patching completions instance');
+  if (!completions || completions.__deepseekReasoningPatched) return;
+  completions.__deepseekReasoningPatched = true;
 
   // Shared mutable slot: set by _streamResponseChunks / _generate before the
-  // converter runs, read by completionWithRetry after the converter has mapped
-  // the messages.
+  // converter runs, then read by completionWithRetry.
   let currentOriginalMessages: BaseMessage[] | null = null;
 
   // ----- _streamResponseChunks (streaming path) -----
@@ -166,13 +177,6 @@ const patchDeepSeekCompletions = (chatModel: ChatOpenAI): void => {
     runManager: any,
   ) {
     currentOriginalMessages = messages;
-    const assistantMsgs = messages.filter(
-      (m: any) => (m?.getType?.() ?? m?.constructor?.name === 'AIMessage') || m?.type === 'ai',
-    );
-    const rcSizes = assistantMsgs.map(
-      (m: any) => (m.additional_kwargs || m.kwargs)?.reasoning_content?.length ?? 0,
-    );
-    console.warn('[deepseek] _streamResponseChunks:', messages.length, 'msgs, rc:', rcSizes);
     try {
       yield* origStreamChunks(messages, options, runManager);
     } finally {
@@ -189,7 +193,6 @@ const patchDeepSeekCompletions = (chatModel: ChatOpenAI): void => {
     runManager: any,
   ) {
     currentOriginalMessages = messages;
-    console.warn('[deepseek] _generate:', messages.length, 'msgs');
     try {
       return await origGenerate(messages, options, runManager);
     } finally {
@@ -201,61 +204,166 @@ const patchDeepSeekCompletions = (chatModel: ChatOpenAI): void => {
   const origCompletionWithRetry = completions.completionWithRetry.bind(completions);
   completions.completionWithRetry = async function (this: any, request: any, requestOptions: any) {
     if (request.messages && currentOriginalMessages) {
-      let injected = 0;
-      let skippedDuck = 0;
-      let skippedNoRc = 0;
-      const hasCurrent = !!currentOriginalMessages;
-      console.warn(
-        '[deepseek] completionWithRetry: hasCurrent=',
-        hasCurrent,
-        'reqMsgs=',
-        request.messages.length,
-        'origMsgs=',
-        currentOriginalMessages.length,
-      );
       request = {
         ...request,
-        messages: request.messages.map((mappedMsg: Record<string, unknown>, i: number) => {
-          if (mappedMsg.role !== 'assistant' || i >= currentOriginalMessages!.length) {
-            return mappedMsg;
-          }
-          const orig = currentOriginalMessages![i];
-          // AIMessage.isInstance may return false for deserialized messages
-          // (LangGraph checkpoints serialize state between turns).
-          // Check for the additional_kwargs duck-type instead.
-          const ak = (orig as any).additional_kwargs;
-          if (!ak || typeof ak !== 'object') {
-            skippedDuck++;
-            return mappedMsg;
-          }
-          const rc: string | undefined = ak.reasoning_content as string | undefined;
-          if (!rc) {
-            skippedNoRc++;
-            return mappedMsg;
-          }
-          injected++;
-          return { ...mappedMsg, reasoning_content: rc };
-        }),
+        messages: buildDeepSeekRequestMessages(currentOriginalMessages),
       };
-      console.warn(
-        '[deepseek] completionWithRetry result: injected=',
-        injected,
-        'skippedDuck=',
-        skippedDuck,
-        'skippedNoRc=',
-        skippedNoRc,
-      );
-    } else {
-      console.warn(
-        '[deepseek] completionWithRetry SKIP: hasMsgs=',
-        !!request.messages,
-        'hasCurrent=',
-        !!currentOriginalMessages,
-      );
     }
     return origCompletionWithRetry(request, requestOptions);
   };
 };
+
+const normalizeMessageContent = (content: unknown): string => {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((block: any) => block?.type === 'text' || typeof block === 'string')
+      .map((block: any) => (typeof block === 'string' ? block : block.text || ''))
+      .join('');
+  }
+  if (content == null) return '';
+  return String(content);
+};
+
+const normalizeToolCallArgs = (toolCall: any): Record<string, unknown> => {
+  if (toolCall?.args && typeof toolCall.args === 'object') {
+    return toolCall.args as Record<string, unknown>;
+  }
+  try {
+    return toolCall?.function?.arguments ? JSON.parse(toolCall.function.arguments) : {};
+  } catch {
+    return {};
+  }
+};
+
+const normalizeToolCalls = (toolCalls: unknown): AgentToolCall[] | undefined => {
+  if (!Array.isArray(toolCalls) || toolCalls.length === 0) return undefined;
+  return toolCalls.map((toolCall: any) => ({
+    id: typeof toolCall?.id === 'string' ? toolCall.id : undefined,
+    name: toolCall?.name || toolCall?.function?.name || 'unknown',
+    args: normalizeToolCallArgs(toolCall),
+    type: typeof toolCall?.type === 'string' ? toolCall.type : 'tool_call',
+  }));
+};
+
+const stringifyToolArguments = (args: unknown): string => {
+  if (typeof args === 'string') return args;
+  try {
+    return JSON.stringify(args ?? {});
+  } catch {
+    return '{}';
+  }
+};
+
+const normalizeOpenAIContent = (content: unknown): string | Array<Record<string, unknown>> => {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return normalizeMessageContent(content);
+
+  const blocks = content.flatMap((block: any) => {
+    if (typeof block === 'string') {
+      return [{ type: 'text', text: block }];
+    }
+    if (block?.type === 'text' && typeof block.text === 'string') {
+      return [{ type: 'text', text: block.text }];
+    }
+    return [];
+  });
+
+  if (blocks.length === 0) return '';
+  if (blocks.length === 1) return blocks[0].text as string;
+  return blocks;
+};
+
+const getOpenAIRole = (message: any): string => {
+  const messageType = message?._getType?.() || message?.type || message?.constructor?.name || 'unknown';
+  if ((message.additional_kwargs || {}).__openai_role__ === 'developer') {
+    return 'developer';
+  }
+  switch (messageType) {
+    case 'human':
+    case 'HumanMessage':
+      return 'user';
+    case 'ai':
+    case 'AIMessage':
+      return 'assistant';
+    case 'system':
+    case 'SystemMessage':
+      return 'system';
+    case 'tool':
+    case 'ToolMessage':
+      return 'tool';
+    case 'function':
+    case 'FunctionMessage':
+      return 'function';
+    default:
+      return typeof message.role === 'string' ? message.role : 'user';
+  }
+};
+
+export const buildDeepSeekRequestMessages = (
+  messages: Array<BaseMessage | Record<string, unknown>>,
+): Array<Record<string, unknown>> =>
+  messages.map((message: any) => {
+    const role = getOpenAIRole(message);
+    const additionalKwargs =
+      message.additional_kwargs && typeof message.additional_kwargs === 'object'
+        ? message.additional_kwargs
+        : {};
+    const requestMessage: Record<string, unknown> = {
+      role,
+      content: normalizeOpenAIContent(message.content),
+    };
+
+    if (typeof message.name === 'string' && message.name.length > 0) {
+      requestMessage.name = message.name;
+    }
+    if (role === 'assistant') {
+      const toolCalls = Array.isArray(message.tool_calls)
+        ? message.tool_calls
+        : Array.isArray(additionalKwargs.tool_calls)
+          ? additionalKwargs.tool_calls
+          : undefined;
+      if (toolCalls?.length) {
+        requestMessage.tool_calls = toolCalls.map((toolCall: any) => {
+          if (toolCall?.function) {
+            return {
+              id: toolCall.id,
+              type: toolCall.type ?? 'function',
+              function: {
+                name: toolCall.function.name,
+                arguments: stringifyToolArguments(toolCall.function.arguments),
+              },
+            };
+          }
+          return {
+            id: toolCall?.id,
+            type: 'function',
+            function: {
+              name: toolCall?.name ?? 'unknown',
+              arguments: stringifyToolArguments(toolCall?.args),
+            },
+          };
+        });
+      }
+      if (additionalKwargs.function_call != null) {
+        requestMessage.function_call = additionalKwargs.function_call;
+      }
+      if (typeof additionalKwargs.reasoning_content === 'string') {
+        requestMessage.reasoning_content = additionalKwargs.reasoning_content;
+      }
+      return requestMessage;
+    }
+
+    if (role === 'tool' && typeof message.tool_call_id === 'string') {
+      requestMessage.tool_call_id = message.tool_call_id;
+    }
+
+    if (role === 'function' && typeof message.name === 'string') {
+      requestMessage.name = message.name;
+    }
+
+    return requestMessage;
+  });
 
 export const createChatModel = (config: ProviderConfig): BaseChatModel => {
   switch (config.provider) {
@@ -479,11 +587,59 @@ export const createGraphRAGAgent = (
 /**
  * Message type for agent conversation
  */
-export interface AgentMessage {
-  role: 'user' | 'assistant';
-  content: string;
-  reasoning_content?: string;
-}
+export type AgentMessage = { role: 'user'; content: string } | AgentHistoryMessage;
+
+export const buildLangChainMessages = (messages: AgentMessage[]): BaseMessage[] =>
+  messages.map((message) => {
+    if (message.role === 'user') {
+      return new HumanMessage(message.content);
+    }
+    if (message.role === 'tool') {
+      return new ToolMessage({
+        content: message.content,
+        tool_call_id: message.toolCallId,
+        ...(message.name ? { name: message.name } : {}),
+      });
+    }
+    return new AIMessage({
+      content: message.content,
+      ...(typeof message.reasoningContent === 'string'
+        ? { additional_kwargs: { reasoning_content: message.reasoningContent } }
+        : {}),
+      ...(message.toolCalls?.length ? { tool_calls: message.toolCalls } : {}),
+    } as any);
+  });
+
+export const serializeAgentHistoryMessages = (
+  messages: unknown[],
+  startIndex = 0,
+): AgentHistoryMessage[] => {
+  const serialized: AgentHistoryMessage[] = [];
+  for (const rawMessage of messages.slice(startIndex)) {
+    const msg: any = rawMessage;
+    const msgType = msg?._getType?.() || msg?.type || msg?.constructor?.name || 'unknown';
+    if (msgType === 'ai' || msgType === 'AIMessage') {
+      const reasoningContent = (msg.additional_kwargs || msg.kwargs)?.reasoning_content;
+      const toolCalls = normalizeToolCalls(msg.tool_calls);
+      serialized.push({
+        role: 'assistant',
+        content: normalizeMessageContent(msg.content),
+        ...(typeof reasoningContent === 'string' ? { reasoningContent } : {}),
+        ...(toolCalls?.length ? { toolCalls } : {}),
+      });
+      continue;
+    }
+    if (msgType === 'tool' || msgType === 'ToolMessage') {
+      serialized.push({
+        role: 'tool',
+        content: normalizeMessageContent(msg.content),
+        toolCallId: String(msg.tool_call_id ?? ''),
+        ...(typeof msg.name === 'string' ? { name: msg.name } : {}),
+      });
+    }
+  }
+  return serialized;
+};
 
 /**
  * Stream a response from the agent
@@ -498,19 +654,7 @@ export async function* streamAgentResponse(
   messages: AgentMessage[],
 ): AsyncGenerator<AgentStreamChunk> {
   try {
-    // Build proper LangChain messages so additional_kwargs (including
-    // reasoning_content) are preserved for the outbound converter patch.
-    const formattedMessages = messages.map((m) => {
-      if (m.role === 'user') {
-        return new HumanMessage(m.content);
-      }
-      return new AIMessage({
-        content: m.content,
-        ...(m.reasoning_content
-          ? { additional_kwargs: { reasoning_content: m.reasoning_content } }
-          : {}),
-      });
-    });
+    const formattedMessages = buildLangChainMessages(messages);
 
     // Use BOTH modes: 'values' for structure, 'messages' for token streaming
     const stream = await agent.stream({ messages: formattedMessages }, {
@@ -529,7 +673,8 @@ export async function* streamAgentResponse(
     // Anything before the first tool call should be treated as "reasoning/narration"
     // so the UI can show the Cursor-like loop: plan → tool → update → tool → answer.
     let hasSeenToolCallThisTurn = false;
-    // Track the last set of messages for reasoning_content extraction
+    // Track the last set of messages so we can persist the raw assistant/tool
+    // transcript for the next user turn.
     let lastStepMessages: any[] | null = null;
 
     for await (const event of stream) {
@@ -708,22 +853,12 @@ export async function* streamAgentResponse(
       console.log('✅ Stream completed normally, yielding done');
     }
 
-    // Extract reasoning_content from the last assistant message for
-    // DeepSeek thinking-mode round-tripping on the next turn.
-    let reasoningContent: string | undefined;
-    if (lastStepMessages) {
-      for (let i = lastStepMessages.length - 1; i >= 0; i--) {
-        const msg = lastStepMessages[i];
-        const ak = (msg as any).additional_kwargs;
-        if (ak && typeof ak === 'object' && typeof ak.reasoning_content === 'string') {
-          reasoningContent = ak.reasoning_content as string;
-          console.warn('[deepseek] captured reasoning_content length:', reasoningContent.length);
-          break;
-        }
-      }
-    }
-
-    yield { type: 'done', reasoningContent };
+    yield {
+      type: 'done',
+      historyMessages: lastStepMessages
+        ? serializeAgentHistoryMessages(lastStepMessages, formattedMessages.length)
+        : undefined,
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // DEBUG: Stream error
@@ -745,10 +880,7 @@ export const invokeAgent = async (
   agent: ReturnType<typeof createReactAgent>,
   messages: AgentMessage[],
 ): Promise<string> => {
-  const formattedMessages = messages.map((m) => ({
-    role: m.role,
-    content: m.content,
-  }));
+  const formattedMessages = buildLangChainMessages(messages);
 
   const result = await agent.invoke({ messages: formattedMessages });
 

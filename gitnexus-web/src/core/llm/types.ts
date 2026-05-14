@@ -236,8 +236,8 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'tool';
   content: string;
-  /** DeepSeek thinking-mode reasoning_content that must be round-tripped */
-  reasoningContent?: string;
+  /** Hidden raw transcript for reconstructing future agent turns */
+  historyMessages?: AgentHistoryMessage[];
   /** @deprecated Use steps instead for proper ordering */
   toolCalls?: ToolCallInfo[];
   /** Ordered steps: reasoning, tool calls, and final content interleaved */
@@ -258,6 +258,34 @@ export interface ToolCallInfo {
 }
 
 /**
+ * Minimal tool-call payload needed to reconstruct prior assistant turns.
+ */
+export interface AgentToolCall {
+  id?: string;
+  name: string;
+  args: Record<string, unknown>;
+  type: 'tool_call';
+}
+
+/**
+ * Hidden per-turn transcript we keep so providers like DeepSeek can replay
+ * the original assistant/tool exchange on later user turns.
+ */
+export type AgentHistoryMessage =
+  | {
+      role: 'assistant';
+      content: string;
+      reasoningContent?: string;
+      toolCalls?: AgentToolCall[];
+    }
+  | {
+      role: 'tool';
+      content: string;
+      toolCallId: string;
+      name?: string;
+    };
+
+/**
  * Streaming chunk from agent
  * Now supports step-based streaming where each step is a distinct message
  */
@@ -267,8 +295,8 @@ export interface AgentStreamChunk {
   reasoning?: string;
   /** Final answer content (streamed token by token) */
   content?: string;
-  /** DeepSeek reasoning_content for next-turn round-trip */
-  reasoningContent?: string;
+  /** Hidden raw transcript for reconstructing future agent turns */
+  historyMessages?: AgentHistoryMessage[];
   /** Tool call information */
   toolCall?: ToolCallInfo;
   /** Error message */
