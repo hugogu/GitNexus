@@ -36,7 +36,6 @@ const FIXTURE_SRC = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
 // still works), `afterAll` rms the parent tmpdir.
 let MINI_REPO: string;
 let tmpParent: string;
-let suiteGitnexusHome: string;
 
 // Absolute file:// URL to tsx loader — needed when spawning CLI with cwd
 // outside the project tree (bare 'tsx' specifier won't resolve there).
@@ -50,7 +49,6 @@ beforeAll(() => {
   // Copy the fixture into an isolated tmpdir named `mini-repo` so that the
   // `--repo mini-repo` CLI arg (which matches by basename) still works.
   tmpParent = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-cli-e2e-'));
-  suiteGitnexusHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-cli-e2e-home-'));
   MINI_REPO = path.join(tmpParent, 'mini-repo');
   fs.cpSync(FIXTURE_SRC, MINI_REPO, { recursive: true });
 
@@ -77,22 +75,7 @@ afterAll(() => {
   if (tmpParent) {
     fs.rmSync(tmpParent, { recursive: true, force: true });
   }
-  if (suiteGitnexusHome) {
-    fs.rmSync(suiteGitnexusHome, { recursive: true, force: true });
-  }
 });
-
-function cliEnv(extraEnv: Record<string, string> = {}) {
-  return {
-    ...process.env,
-    GITNEXUS_HOME: suiteGitnexusHome,
-    // Pre-set --max-old-space-size so analyzeCommand's ensureHeap() sees it
-    // and skips the re-exec. The re-exec drops the tsx loader (--import tsx
-    // is not in process.argv), causing ERR_UNKNOWN_FILE_EXTENSION on .ts files.
-    NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-    ...extraEnv,
-  };
-}
 
 function runCli(command: string, cwd: string, timeoutMs = 15000) {
   return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, command], {
@@ -100,7 +83,13 @@ function runCli(command: string, cwd: string, timeoutMs = 15000) {
     encoding: 'utf8',
     timeout: timeoutMs,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: cliEnv(),
+    env: {
+      ...process.env,
+      // Pre-set --max-old-space-size so analyzeCommand's ensureHeap() sees it
+      // and skips the re-exec. The re-exec drops the tsx loader (--import tsx
+      // is not in process.argv), causing ERR_UNKNOWN_FILE_EXTENSION on .ts files.
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+    },
   });
 }
 
@@ -114,7 +103,10 @@ function runCliRaw(extraArgs: string[], cwd: string, timeoutMs = 15000) {
     encoding: 'utf8',
     timeout: timeoutMs,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: cliEnv(),
+    env: {
+      ...process.env,
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+    },
   });
 }
 
@@ -134,7 +126,11 @@ function runCliWithEnv(
     encoding: 'utf8',
     timeout: timeoutMs,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: cliEnv(extraEnv),
+    env: {
+      ...process.env,
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+      ...extraEnv,
+    },
   });
 }
 
@@ -923,7 +919,10 @@ describe('CLI end-to-end', () => {
         encoding: 'utf8',
         timeout: timeoutMs,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: cliEnv(),
+        env: {
+          ...process.env,
+          NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+        },
       });
     }
 
@@ -1043,7 +1042,10 @@ describe('CLI end-to-end', () => {
             encoding: 'utf8',
             timeout: 15000,
             stdio: ['pipe', 'pipe', 'pipe'],
-            env: cliEnv(),
+            env: {
+              ...process.env,
+              NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+            },
           },
         );
         if (result.status === null) return;
@@ -1157,7 +1159,10 @@ describe('CLI end-to-end', () => {
           {
             cwd: MINI_REPO,
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: cliEnv(),
+            env: {
+              ...process.env,
+              NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+            },
           },
         );
 
@@ -1207,7 +1212,10 @@ describe('CLI end-to-end', () => {
           {
             cwd: MINI_REPO,
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: cliEnv(),
+            env: {
+              ...process.env,
+              NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+            },
           },
         );
 

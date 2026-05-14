@@ -755,10 +755,8 @@ export class LocalBackend {
       timer.time('vector', this.semanticSearch(repo, searchQuery, searchLimit)),
     ]);
 
-    // Guard against undefined results (#1489) — when FTS is entirely
-    // unavailable the search helper may return an unexpected shape.
-    const bm25Results = bm25SearchResult?.results ?? [];
-    const ftsUsed = bm25SearchResult?.ftsUsed ?? false;
+    const bm25Results = bm25SearchResult.results;
+    const ftsUsed = bm25SearchResult.ftsUsed;
 
     // Merge via reciprocal rank fusion
     timer.start('merge');
@@ -776,9 +774,8 @@ export class LocalBackend {
       }
     }
 
-    const safeSemanticResults = semanticResults ?? [];
-    for (let i = 0; i < safeSemanticResults.length; i++) {
-      const result = safeSemanticResults[i];
+    for (let i = 0; i < semanticResults.length; i++) {
+      const result = semanticResults[i];
       const key = result.nodeId || result.filePath;
       const rrfScore = 1 / (60 + i);
       const existing = scoreMap.get(key);
@@ -995,17 +992,7 @@ export class LocalBackend {
     query: string,
     limit: number,
   ): Promise<{ results: any[]; ftsUsed: boolean }> {
-    let searchFTSFromLbug;
-    try {
-      ({ searchFTSFromLbug } = await import('../../core/search/bm25-index.js'));
-    } catch (err: any) {
-      // Module import can fail in sandboxed MCP contexts (#1489)
-      logger.warn(
-        { err: err?.message },
-        'GitNexus: bm25-index.js import failed — falling back to semantic-only',
-      );
-      return { results: [], ftsUsed: false };
-    }
+    const { searchFTSFromLbug } = await import('../../core/search/bm25-index.js');
     let ftsResponse;
     try {
       ftsResponse = await searchFTSFromLbug(query, limit, repo.id);
@@ -1017,10 +1004,8 @@ export class LocalBackend {
       return { results: [], ftsUsed: false };
     }
 
-    // Guard against unexpected response shape (#1489) — ftsResponse.results
-    // could be undefined when the FTS extension is unavailable in the MCP process.
-    const bm25Results = ftsResponse?.results ?? [];
-    const ftsUsed = ftsResponse?.ftsAvailable ?? false;
+    const bm25Results = ftsResponse.results;
+    const ftsUsed = ftsResponse.ftsAvailable;
 
     const results: any[] = [];
 

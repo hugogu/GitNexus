@@ -7,7 +7,6 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { sanitizeMermaidMarkdown } from './mermaid-sanitizer.js';
 
 interface ModuleTreeNode {
   name: string;
@@ -43,7 +42,7 @@ export async function generateHTMLViewer(wikiDir: string, projectName: string): 
   const dirEntries = await fs.readdir(wikiDir);
   for (const f of dirEntries.filter((f) => f.endsWith('.md'))) {
     const content = await fs.readFile(path.join(wikiDir, f), 'utf-8');
-    pages[f.replace(/\.md$/, '')] = sanitizeMermaidMarkdown(content);
+    pages[f.replace(/\.md$/, '')] = content;
   }
 
   const html = buildHTML(projectName, moduleTree, pages, meta);

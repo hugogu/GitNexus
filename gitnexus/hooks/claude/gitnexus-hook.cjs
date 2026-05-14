@@ -14,7 +14,6 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { acquireHookSlot } = require('./hook-lock.cjs');
 
 /**
  * Read JSON input from stdin synchronously.
@@ -208,8 +207,7 @@ function runGitNexusCli(cliPath, args, cwd, timeout) {
 function handlePreToolUse(input) {
   const cwd = input.cwd || process.cwd();
   if (!path.isAbsolute(cwd)) return;
-  const gitNexusDir = findGitNexusDir(cwd);
-  if (!gitNexusDir) return;
+  if (!findGitNexusDir(cwd)) return;
 
   const toolName = input.tool_name || '';
   const toolInput = input.tool_input || {};
@@ -218,9 +216,6 @@ function handlePreToolUse(input) {
 
   const pattern = extractPattern(toolName, toolInput);
   if (!pattern || pattern.length < 3) return;
-
-  const release = acquireHookSlot(gitNexusDir);
-  if (!release) return;
 
   const cliPath = resolveCliPath();
   let result = '';
@@ -231,8 +226,6 @@ function handlePreToolUse(input) {
     }
   } catch {
     /* graceful failure */
-  } finally {
-    release();
   }
 
   if (result && result.trim()) {
