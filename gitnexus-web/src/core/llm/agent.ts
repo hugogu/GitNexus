@@ -150,6 +150,7 @@ GOOD: A["User Data"] --> B["Process and Save"]
 const patchDeepSeekCompletions = (chatModel: ChatOpenAI): void => {
   const completions = (chatModel as any).completions;
   if (!completions) return;
+  console.warn('[deepseek] patching completions instance');
 
   // Shared mutable slot: set by _streamResponseChunks / _generate before the
   // converter runs, read by completionWithRetry after the converter has mapped
@@ -165,6 +166,13 @@ const patchDeepSeekCompletions = (chatModel: ChatOpenAI): void => {
     runManager: any,
   ) {
     currentOriginalMessages = messages;
+    const assistantMsgs = messages.filter(
+      (m: any) => (m?.getType?.() ?? m?.constructor?.name === 'AIMessage') || m?.type === 'ai',
+    );
+    const rcSizes = assistantMsgs.map(
+      (m: any) => (m.additional_kwargs || m.kwargs)?.reasoning_content?.length ?? 0,
+    );
+    console.warn('[deepseek] _streamResponseChunks:', messages.length, 'msgs, rc:', rcSizes);
     try {
       yield* origStreamChunks(messages, options, runManager);
     } finally {
@@ -181,6 +189,7 @@ const patchDeepSeekCompletions = (chatModel: ChatOpenAI): void => {
     runManager: any,
   ) {
     currentOriginalMessages = messages;
+    console.warn('[deepseek] _generate:', messages.length, 'msgs');
     try {
       return await origGenerate(messages, options, runManager);
     } finally {
@@ -192,6 +201,18 @@ const patchDeepSeekCompletions = (chatModel: ChatOpenAI): void => {
   const origCompletionWithRetry = completions.completionWithRetry.bind(completions);
   completions.completionWithRetry = async function (this: any, request: any, requestOptions: any) {
     if (request.messages && currentOriginalMessages) {
+      let injected = 0;
+      let skippedDuck = 0;
+      let skippedNoRc = 0;
+      const hasCurrent = !!currentOriginalMessages;
+      console.warn(
+        '[deepseek] completionWithRetry: hasCurrent=',
+        hasCurrent,
+        'reqMsgs=',
+        request.messages.length,
+        'origMsgs=',
+        currentOriginalMessages.length,
+      );
       request = {
         ...request,
         messages: request.messages.map((mappedMsg: Record<string, unknown>, i: number) => {
@@ -203,12 +224,34 @@ const patchDeepSeekCompletions = (chatModel: ChatOpenAI): void => {
           // (LangGraph checkpoints serialize state between turns).
           // Check for the additional_kwargs duck-type instead.
           const ak = (orig as any).additional_kwargs;
-          if (!ak || typeof ak !== 'object') return mappedMsg;
+          if (!ak || typeof ak !== 'object') {
+            skippedDuck++;
+            return mappedMsg;
+          }
           const rc: string | undefined = ak.reasoning_content as string | undefined;
-          if (!rc) return mappedMsg;
+          if (!rc) {
+            skippedNoRc++;
+            return mappedMsg;
+          }
+          injected++;
           return { ...mappedMsg, reasoning_content: rc };
         }),
       };
+      console.warn(
+        '[deepseek] completionWithRetry result: injected=',
+        injected,
+        'skippedDuck=',
+        skippedDuck,
+        'skippedNoRc=',
+        skippedNoRc,
+      );
+    } else {
+      console.warn(
+        '[deepseek] completionWithRetry SKIP: hasMsgs=',
+        !!request.messages,
+        'hasCurrent=',
+        !!currentOriginalMessages,
+      );
     }
     return origCompletionWithRetry(request, requestOptions);
   };
