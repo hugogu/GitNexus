@@ -6,7 +6,7 @@
  */
 
 import { createReactAgent } from '@langchain/langgraph/prebuilt';
-import { SystemMessage, AIMessage, type BaseMessage } from '@langchain/core/messages';
+import { SystemMessage, type BaseMessage } from '@langchain/core/messages';
 import { ChatOpenAI, AzureChatOpenAI } from '@langchain/openai';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { ChatAnthropic } from '@langchain/anthropic';
@@ -199,10 +199,12 @@ const patchDeepSeekCompletions = (chatModel: ChatOpenAI): void => {
             return mappedMsg;
           }
           const orig = currentOriginalMessages![i];
-          if (!AIMessage.isInstance(orig)) return mappedMsg;
-          const rc: string | undefined = orig.additional_kwargs?.reasoning_content as
-            | string
-            | undefined;
+          // AIMessage.isInstance may return false for deserialized messages
+          // (LangGraph checkpoints serialize state between turns).
+          // Check for the additional_kwargs duck-type instead.
+          const ak = (orig as any).additional_kwargs;
+          if (!ak || typeof ak !== 'object') return mappedMsg;
+          const rc: string | undefined = ak.reasoning_content as string | undefined;
           if (!rc) return mappedMsg;
           return { ...mappedMsg, reasoning_content: rc };
         }),
