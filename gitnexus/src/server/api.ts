@@ -1396,7 +1396,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       // Path validation: require absolute path, reject traversal (e.g. /tmp/../etc/passwd)
       if (repoLocalPath) {
         if (!path.isAbsolute(repoLocalPath)) {
-          res.status(400).json({ error: '"path" must be an absolute path' });
+          if (/^[A-Za-z]:[/\\]/.test(repoLocalPath)) {
+            res.status(400).json({
+              error: `"${repoLocalPath}" appears to be a Windows path. When using Docker, mount your project and use a container path (e.g., /workspace/my-project).`,
+            });
+          } else {
+            res.status(400).json({
+              error:
+                '"path" must be an absolute path (e.g., /home/user/project or /workspace/project in Docker)',
+            });
+          }
           return;
         }
         if (path.normalize(repoLocalPath) !== path.resolve(repoLocalPath)) {

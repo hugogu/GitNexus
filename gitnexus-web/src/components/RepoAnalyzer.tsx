@@ -141,6 +141,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   const [localPath, setLocalPath] = useState('');
   const [phase, setPhase] = useState<InternalPhase>('input');
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [showPathGuide, setShowPathGuide] = useState(false);
   const [progress, setProgress] = useState<JobProgress>({
     phase: 'queued',
     percent: 0,
@@ -163,6 +164,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     setMode(m);
     setGithubUrl('');
     setLocalPath('');
+    setShowPathGuide(false);
     setValidationError(null);
   };
 
@@ -322,6 +324,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
               value={localPath}
               onChange={(e) => {
                 setLocalPath(e.target.value);
+                setShowPathGuide(false);
                 if (validationError) setValidationError(null);
               }}
               onKeyDown={(e) => {
@@ -353,7 +356,10 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
                 const rel = files[0].webkitRelativePath;
                 const folderName = rel.split('/')[0];
                 if (folderName) {
+                  // Browsers don't expose absolute paths — show the folder name
+                  // with a hint that the user must enter the full container path.
                   setLocalPath(folderName);
+                  setShowPathGuide(true);
                   setValidationError(null);
                 }
               }
@@ -369,6 +375,20 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             <FolderOpen className="h-3.5 w-3.5" />
             Browse for folder
           </button>
+          {showPathGuide && (
+            <p className="flex animate-fade-in items-start gap-1.5 rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
+              <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+              <span>
+                Browsers cannot provide the full path. Type the absolute path above (e.g.,{' '}
+                <code className="rounded bg-amber-500/15 px-1 font-mono">
+                  /workspace/{localPath || 'project'}
+                </code>{' '}
+                in Docker, or{' '}
+                <code className="rounded bg-amber-500/15 px-1 font-mono">/home/user/project</code>{' '}
+                on Linux/macOS).
+              </span>
+            </p>
+          )}
         </div>
       )}
 
