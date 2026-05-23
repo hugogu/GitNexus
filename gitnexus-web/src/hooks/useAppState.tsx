@@ -128,8 +128,8 @@ interface AppState {
   setGraphViewMode: (mode: 'force' | 'tree') => void;
 
   // Tree sort mode
-  treeSortMode: 'alphabetical' | 'degree';
-  setTreeSortMode: (mode: 'alphabetical' | 'degree') => void;
+  treeSortMode: 'alphabetical' | 'degree' | 'auto';
+  setTreeSortMode: (mode: 'alphabetical' | 'degree' | 'auto') => void;
 
   // Query state
   highlightedNodeIds: Set<string>;

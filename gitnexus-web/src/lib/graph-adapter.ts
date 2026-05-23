@@ -93,18 +93,18 @@ export const knowledgeGraphToGraphology = (
   // Build parent-child map from hierarchy relationships
   // CONTAINS: Folder -> File
   // DEFINES: File -> Function/Class/Interface/Method
-  // IMPORTS: File -> Import
+  // IMPORTS: File -> File dependency edge (not hierarchy)
   // parent -> children
   const parentToChildren = new Map<string, string[]>();
   // child -> parent
   const childToParent = new Map<string, string>();
 
-  const hierarchyRelations = new Set(['CONTAINS', 'DEFINES', 'IMPORTS']);
+  const hierarchyRelations = new Set(['CONTAINS', 'DEFINES']);
 
   knowledgeGraph.relationships.forEach((rel) => {
     // These relationships represent parent-child hierarchy for positioning
     if (hierarchyRelations.has(rel.type)) {
-      // source CONTAINS/DEFINES/IMPORTS target, so source is parent
+      // source CONTAINS/DEFINES target, so source is parent
       if (!parentToChildren.has(rel.sourceId)) {
         parentToChildren.set(rel.sourceId, []);
       }
@@ -321,7 +321,7 @@ export const knowledgeGraphToGraphology = (
 
 export const knowledgeGraphToTreeGraphology = (
   knowledgeGraph: KnowledgeGraph,
-  sortMode: 'alphabetical' | 'degree' = 'alphabetical',
+  sortMode: 'alphabetical' | 'degree' | 'auto' = 'auto',
 ): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> => {
   const graph = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>();
   const nodeCount = knowledgeGraph.nodes.length;
@@ -357,7 +357,6 @@ export const knowledgeGraphToTreeGraphology = (
   const HIERARCHY_EDGE_STYLES: Record<string, { color: string; sizeMultiplier: number }> = {
     CONTAINS: { color: '#3a3a4a', sizeMultiplier: 0.3 },
     DEFINES: { color: '#3a4a4a', sizeMultiplier: 0.3 },
-    IMPORTS: { color: '#3a3a4a', sizeMultiplier: 0.3 },
   };
 
   const CROSS_EDGE_STYLES: Record<string, { color: string; sizeMultiplier: number }> = {

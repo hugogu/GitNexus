@@ -170,7 +170,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
   );
 
   const handleSortModeChange = useCallback(
-    (mode: 'alphabetical' | 'degree') => {
+    (mode: 'alphabetical' | 'degree' | 'auto') => {
       setTreeSortMode(mode);
     },
     [setTreeSortMode],
@@ -321,6 +321,16 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
             }`}
           >
             By Calls
+          </button>
+          <button
+            onClick={() => handleSortModeChange('auto')}
+            className={`rounded-md px-2.5 py-1 text-xs transition-all ${
+              treeSortMode === 'auto'
+                ? 'bg-accent/20 text-accent'
+                : 'text-text-secondary hover:bg-hover'
+            }`}
+          >
+            Auto
           </button>
         </div>
       )}

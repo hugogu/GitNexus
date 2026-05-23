@@ -110,24 +110,38 @@ function calculateGrid(nodeCount: number, availableWidth: number, availableHeigh
   return { cols, rows, gapX, gapY };
 }
 
-export function calculateTreeLayout(
+interface LayoutNode {
+  id: string;
+  x: number;
+  y: number;
+  layer: number;
+  size: number;
+  degree: number;
+  label: NodeLabel;
+}
+
+function getNodeLayer(node: GraphNode): number {
+  return TYPE_TO_LAYER[node.label] ?? DEFAULT_LAYER;
+}
+
+/**
+ * Initialize positions using grid layout (used by alphabetical/degree and as auto seed).
+ */
+function initGridPositions(
   graph: KnowledgeGraph,
   sortMode: 'alphabetical' | 'degree',
 ): Map<string, TreeNodePosition> {
   const positions = new Map<string, TreeNodePosition>();
   const degrees = calculateDegrees(graph);
 
-  // 1. Group nodes by layer
   const nodesByLayer: GraphNode[][] = [[], [], [], []];
-
   for (const node of graph.nodes) {
-    const layer = TYPE_TO_LAYER[node.label] ?? DEFAULT_LAYER;
+    const layer = getNodeLayer(node);
     if (layer >= 0 && layer < LAYER_COUNT) {
       nodesByLayer[layer].push(node);
     }
   }
 
-  // 2. Sort each layer
   for (let layer = 0; layer < LAYER_COUNT; layer++) {
     nodesByLayer[layer].sort((a, b) => {
       if (sortMode === 'alphabetical') {
@@ -140,7 +154,6 @@ export function calculateTreeLayout(
     });
   }
 
-  // 3. Position nodes in a grid within each layer
   const availableWidth = CANVAS_WIDTH - PADDING_X * 2;
   const availableHeight = LAYER_HEIGHT - PADDING_Y * 2;
 
@@ -159,19 +172,14 @@ export function calculateTreeLayout(
       const row = Math.floor(i / cols);
       const col = i % cols;
 
-      // X: centered
       const x = -availableWidth / 2 + (col + 0.5) * gapX;
-
-      // Y: within layer, vertically centered
       const y = layerBaseY + verticalOffset + (row + 0.5) * gapY;
-
       const size = calculateNodeSize(layer, node.label);
 
       positions.set(node.id, { x, y, size, depth: layer });
     }
   }
 
-  // 4. Center entire layout vertically
   if (positions.size > 0) {
     const centerY = CANVAS_HEIGHT / 2;
     for (const pos of positions.values()) {
@@ -180,4 +188,223 @@ export function calculateTreeLayout(
   }
 
   return positions;
+}
+
+/**
+ * Auto layout: physics-based optimization that minimizes edge lengths while
+ * keeping nodes in their type layers. Uses a lightweight force simulation.
+ */
+export function calculateAutoLayout(graph: KnowledgeGraph): Map<string, TreeNodePosition> {
+  const degrees = calculateDegrees(graph);
+
+  // 1. Initialize from grid layout (alphabetical order)
+  const positions = initGridPositions(graph, 'alphabetical');
+
+  // Build node lookup and edge list
+  const nodes: LayoutNode[] = [];
+  const nodeMap = new Map<string, LayoutNode>();
+
+  for (const node of graph.nodes) {
+    const pos = positions.get(node.id);
+    if (!pos) continue;
+
+    const layoutNode: LayoutNode = {
+      id: node.id,
+      x: pos.x,
+      y: pos.y,
+      layer: pos.depth,
+      size: pos.size,
+      degree: degrees.get(node.id) || 0,
+      label: node.label,
+    };
+
+    nodes.push(layoutNode);
+    nodeMap.set(node.id, layoutNode);
+  }
+
+  // Build edge list (only non-hierarchy edges for attraction)
+  const edges: { source: string; target: string; type: string }[] = [];
+  const hierarchyTypes = new Set(['CONTAINS', 'DEFINES']);
+
+  for (const rel of graph.relationships) {
+    if (nodeMap.has(rel.sourceId) && nodeMap.has(rel.targetId)) {
+      edges.push({ source: rel.sourceId, target: rel.targetId, type: rel.type });
+    }
+  }
+
+  // Group edges by type for clustered attraction
+  const edgesByType = new Map<string, typeof edges>();
+  for (const edge of edges) {
+    if (!edgesByType.has(edge.type)) {
+      edgesByType.set(edge.type, []);
+    }
+    edgesByType.get(edge.type)!.push(edge);
+  }
+
+  // 2. Force-directed simulation with layer constraints
+  const ITERATIONS = 25;
+  const ATTRACTION_STRENGTH = 0.08;
+  const REPULSION_STRENGTH = 150;
+  const LAYER_CONSTRAINT_STRENGTH = 0.15;
+  const SAME_TYPE_ATTRACTION = 0.02;
+  const DAMPING = 0.85;
+  const NOISE_SCALE = 12;
+
+  // Layer target Y positions (centered)
+  const layerTargetY: number[] = [];
+  for (let i = 0; i < LAYER_COUNT; i++) {
+    layerTargetY.push(i * LAYER_HEIGHT + LAYER_HEIGHT / 2 - CANVAS_HEIGHT / 2);
+  }
+
+  // Velocities
+  const velocities = new Map<string, { vx: number; vy: number }>();
+  for (const node of nodes) {
+    velocities.set(node.id, { vx: 0, vy: 0 });
+  }
+
+  for (let iter = 0; iter < ITERATIONS; iter++) {
+    const temperature = 1 - iter / ITERATIONS;
+
+    // Reset forces
+    const forces = new Map<string, { fx: number; fy: number }>();
+    for (const node of nodes) {
+      forces.set(node.id, { fx: 0, fy: 0 });
+    }
+
+    // 2a. Edge attraction (minimize edge lengths, grouped by type)
+    for (const [edgeType, typeEdges] of edgesByType) {
+      const typeWeight = hierarchyTypes.has(edgeType) ? 0.3 : 1.0;
+
+      for (const edge of typeEdges) {
+        const src = nodeMap.get(edge.source)!;
+        const tgt = nodeMap.get(edge.target)!;
+
+        const dx = tgt.x - src.x;
+        const dy = tgt.y - src.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+
+        // Target distance based on layer difference
+        const layerDiff = Math.abs(src.layer - tgt.layer);
+        const targetDist = 80 + layerDiff * 60;
+
+        const force = ((dist - targetDist) / dist) * ATTRACTION_STRENGTH * typeWeight;
+
+        const f = forces.get(src.id)!;
+        f.fx += dx * force;
+        f.fy += dy * force;
+
+        const f2 = forces.get(tgt.id)!;
+        f2.fx -= dx * force;
+        f2.fy -= dy * force;
+      }
+    }
+
+    // 2b. Node repulsion (avoid overlap)
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i];
+        const b = nodes[j];
+
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+
+        const minDist = (a.size + b.size) * 2.5;
+        if (dist < minDist) {
+          const force = ((minDist - dist) / dist) * REPULSION_STRENGTH;
+
+          const fa = forces.get(a.id)!;
+          fa.fx -= (dx / dist) * force;
+          fa.fy -= (dy / dist) * force;
+
+          const fb = forces.get(b.id)!;
+          fb.fx += (dx / dist) * force;
+          fb.fy += (dy / dist) * force;
+        }
+      }
+    }
+
+    // 2c. Layer constraint (soft constraint on Y)
+    for (const node of nodes) {
+      const targetY = layerTargetY[node.layer];
+      const dy = targetY - node.y;
+      const f = forces.get(node.id)!;
+      f.fy += dy * LAYER_CONSTRAINT_STRENGTH;
+    }
+
+    // 2d. Same-type attraction (cluster same labels)
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i];
+        const b = nodes[j];
+
+        if (a.label === b.label && a.layer === b.layer) {
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+
+          if (dist > 100) {
+            const force = SAME_TYPE_ATTRACTION;
+            const fa = forces.get(a.id)!;
+            fa.fx += (dx / dist) * force;
+            fa.fy += (dy / dist) * force;
+
+            const fb = forces.get(b.id)!;
+            fb.fx -= (dx / dist) * force;
+            fb.fy -= (dy / dist) * force;
+          }
+        }
+      }
+    }
+
+    // 2e. Random noise (organic feel)
+    for (const node of nodes) {
+      const hash = deterministicHash(node.id + iter);
+      const f = forces.get(node.id)!;
+      f.fx += (hash - 0.5) * NOISE_SCALE * temperature;
+      f.fy += (deterministicHash(node.id + iter + 100) - 0.5) * NOISE_SCALE * temperature;
+    }
+
+    // 3. Update positions with degree-based inertia
+    for (const node of nodes) {
+      const vel = velocities.get(node.id)!;
+      const f = forces.get(node.id)!;
+
+      // Higher degree = more mass = slower movement
+      const mass = 1 + node.degree * 0.05;
+
+      vel.vx = (vel.vx + f.fx / mass) * DAMPING;
+      vel.vy = (vel.vy + f.fy / mass) * DAMPING;
+
+      node.x += vel.vx;
+      node.y += vel.vy;
+
+      // Keep within canvas bounds
+      node.x = Math.max(-CANVAS_WIDTH / 2, Math.min(CANVAS_WIDTH / 2, node.x));
+    }
+  }
+
+  // 4. Output
+  const result = new Map<string, TreeNodePosition>();
+  for (const node of nodes) {
+    result.set(node.id, {
+      x: node.x,
+      y: node.y,
+      size: node.size,
+      depth: node.layer,
+    });
+  }
+
+  return result;
+}
+
+export function calculateTreeLayout(
+  graph: KnowledgeGraph,
+  sortMode: 'alphabetical' | 'degree' | 'auto',
+): Map<string, TreeNodePosition> {
+  if (sortMode === 'auto') {
+    return calculateAutoLayout(graph);
+  }
+
+  return initGridPositions(graph, sortMode);
 }
