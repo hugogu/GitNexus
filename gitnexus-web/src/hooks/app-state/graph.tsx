@@ -18,6 +18,8 @@ interface GraphStateContextValue {
   setHighlightedNodeIds: (ids: Set<string>) => void;
   graphViewMode: 'force' | 'tree';
   setGraphViewMode: (mode: 'force' | 'tree') => void;
+  treeSortMode: 'alphabetical' | 'degree';
+  setTreeSortMode: (mode: 'alphabetical' | 'degree') => void;
 }
 
 const GraphStateContext = createContext<GraphStateContextValue | null>(null);
@@ -30,6 +32,7 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
   const [depthFilter, setDepthFilter] = useState<number | null>(null);
   const [highlightedNodeIds, setHighlightedNodeIds] = useState<Set<string>>(new Set());
   const [graphViewMode, setGraphViewMode] = useState<'force' | 'tree'>('force');
+  const [treeSortMode, setTreeSortMode] = useState<'alphabetical' | 'degree'>('alphabetical');
 
   const toggleLabelVisibility = useCallback((label: NodeLabel) => {
     setVisibleLabels((prev) =>
@@ -59,6 +62,8 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
       setHighlightedNodeIds,
       graphViewMode,
       setGraphViewMode,
+      treeSortMode,
+      setTreeSortMode,
     }),
     [
       graph,
@@ -68,6 +73,7 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
       depthFilter,
       highlightedNodeIds,
       graphViewMode,
+      treeSortMode,
     ],
   );
 

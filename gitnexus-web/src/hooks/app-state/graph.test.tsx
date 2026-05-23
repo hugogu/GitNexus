@@ -19,4 +19,17 @@ describe('GraphState', () => {
     });
     expect(result.current.graphViewMode).toBe('tree');
   });
+
+  it('should have default treeSortMode as "alphabetical"', () => {
+    const { result } = renderHook(() => useGraphState(), { wrapper });
+    expect(result.current.treeSortMode).toBe('alphabetical');
+  });
+
+  it('should set treeSortMode', () => {
+    const { result } = renderHook(() => useGraphState(), { wrapper });
+    act(() => {
+      result.current.setTreeSortMode('degree');
+    });
+    expect(result.current.treeSortMode).toBe('degree');
+  });
 });
