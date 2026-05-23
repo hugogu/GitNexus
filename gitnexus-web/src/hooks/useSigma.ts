@@ -7,7 +7,6 @@ import noverlap from 'graphology-layout-noverlap';
 import EdgeCurveProgram from '@sigma/edge-curve';
 import { SigmaNodeAttributes, SigmaEdgeAttributes } from '../lib/graph-adapter';
 import type { NodeAnimation } from './useAppState';
-import type { EdgeType } from '../lib/constants';
 // Helper: Parse hex color to RGB
 const hexToRgb = (hex: string): { r: number; g: number; b: number } => {
   const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -61,7 +60,7 @@ interface UseSigmaOptions {
   highlightedNodeIds?: Set<string>;
   blastRadiusNodeIds?: Set<string>;
   animatedNodes?: Map<string, NodeAnimation>;
-  visibleEdgeTypes?: EdgeType[];
+  visibleEdgeIds?: ReadonlySet<string>;
 }
 
 interface UseSigmaReturn {
@@ -137,7 +136,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const highlightedRef = useRef<Set<string>>(new Set());
   const blastRadiusRef = useRef<Set<string>>(new Set());
   const animatedNodesRef = useRef<Map<string, NodeAnimation>>(new Map());
-  const visibleEdgeTypesRef = useRef<EdgeType[] | null>(null);
+  const visibleEdgeIdsRef = useRef<ReadonlySet<string> | null>(null);
   const layoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const [isLayoutRunning, setIsLayoutRunning] = useState(false);
@@ -147,13 +146,13 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     highlightedRef.current = options.highlightedNodeIds || new Set();
     blastRadiusRef.current = options.blastRadiusNodeIds || new Set();
     animatedNodesRef.current = options.animatedNodes || new Map();
-    visibleEdgeTypesRef.current = options.visibleEdgeTypes || null;
+    visibleEdgeIdsRef.current = options.visibleEdgeIds || null;
     sigmaRef.current?.refresh();
   }, [
     options.highlightedNodeIds,
     options.blastRadiusNodeIds,
     options.animatedNodes,
-    options.visibleEdgeTypes,
+    options.visibleEdgeIds,
   ]);
 
   // Animation loop for node effects
@@ -394,12 +393,10 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         const res = { ...data };
 
         // Check edge type visibility first
-        const visibleTypes = visibleEdgeTypesRef.current;
-        if (visibleTypes && data.relationType) {
-          if (!visibleTypes.includes(data.relationType as EdgeType)) {
-            res.hidden = true;
-            return res;
-          }
+        const visibleEdgeIds = visibleEdgeIdsRef.current;
+        if (visibleEdgeIds && !visibleEdgeIds.has(edge)) {
+          res.hidden = true;
+          return res;
         }
 
         const currentSelected = selectedNodeRef.current;

@@ -5,6 +5,8 @@ import {
   Folder,
   FolderOpen,
   FileCode,
+  GitBranch,
+  Layers,
   Search,
   Filter,
   PanelLeftClose,
@@ -19,7 +21,13 @@ import {
   Type,
 } from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
-import { FILTERABLE_LABELS, NODE_COLORS, ALL_EDGE_TYPES, EDGE_INFO } from '../lib/constants';
+import {
+  FILTERABLE_LABELS,
+  NODE_COLORS,
+  ALL_EDGE_TYPES,
+  EDGE_INFO,
+  TREE_SORT_OPTIONS,
+} from '../lib/constants';
 import type { GraphNode, NodeLabel } from 'gitnexus-shared';
 
 // Tree node structure
@@ -126,6 +134,7 @@ const TreeItem = ({
     <div>
       <button
         onClick={handleClick}
+        data-testid={node.graphNode ? 'file-tree-graph-node' : 'file-tree-node'}
         className={`relative flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm transition-colors hover:bg-hover ${isSelected ? 'border-l-2 border-amber-400 bg-amber-500/15 text-amber-300' : 'border-l-2 border-transparent text-text-secondary hover:text-text-primary'} ${matchesSearch ? 'bg-accent/10' : ''} `}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
       >
@@ -222,6 +231,10 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
     openCodePanel,
     depthFilter,
     setDepthFilter,
+    graphVisualizationMode,
+    setGraphVisualizationMode,
+    treeSortMode,
+    setTreeSortMode,
   } = useAppState();
 
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -369,6 +382,89 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
 
       {activeTab === 'files' && (
         <>
+          <div className="border-b border-border-subtle px-3 py-3">
+            <p className="text-[11px] font-medium tracking-wide text-text-secondary uppercase">
+              Main View
+            </p>
+            <p className="mt-1 text-[11px] text-text-muted">
+              Switch the primary canvas without losing your current explorer context.
+            </p>
+
+            <div className="mt-3 flex rounded-lg border border-border-subtle bg-elevated p-1">
+              <button
+                type="button"
+                data-testid="switch-force-view"
+                aria-pressed={graphVisualizationMode === 'force'}
+                onClick={() => setGraphVisualizationMode('force')}
+                className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors ${
+                  graphVisualizationMode === 'force'
+                    ? 'bg-accent text-white'
+                    : 'text-text-secondary hover:bg-hover hover:text-text-primary'
+                }`}
+              >
+                <GitBranch className="h-3.5 w-3.5" />
+                <span>Force</span>
+              </button>
+              <button
+                type="button"
+                data-testid="switch-tree-view"
+                aria-pressed={graphVisualizationMode === 'tree'}
+                onClick={() => setGraphVisualizationMode('tree')}
+                className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors ${
+                  graphVisualizationMode === 'tree'
+                    ? 'bg-accent text-white'
+                    : 'text-text-secondary hover:bg-hover hover:text-text-primary'
+                }`}
+              >
+                <Layers className="h-3.5 w-3.5" />
+                <span>Tree</span>
+              </button>
+            </div>
+
+            {graphVisualizationMode === 'tree' ? (
+              <div className="mt-3 rounded-lg border border-border-subtle bg-elevated/60 p-2">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-[11px] font-medium tracking-wide text-text-secondary uppercase">
+                    Tree Sort
+                  </span>
+                  <span className="text-[10px] text-text-muted">Sibling ordering</span>
+                </div>
+                <div className="grid grid-cols-3 gap-1">
+                  {TREE_SORT_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      data-testid={`tree-sort-${option.value}`}
+                      aria-pressed={treeSortMode === option.value}
+                      onClick={() => setTreeSortMode(option.value)}
+                      className={`rounded px-2 py-1.5 text-[11px] transition-colors ${
+                        treeSortMode === option.value
+                          ? 'bg-accent text-white'
+                          : 'bg-surface text-text-secondary hover:bg-hover hover:text-text-primary'
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setGraphVisualizationMode('tree')}
+                className="mt-3 flex w-full items-center justify-between rounded-lg border border-dashed border-border-subtle bg-elevated/40 px-3 py-2 text-left transition-colors hover:bg-hover"
+              >
+                <div>
+                  <p className="text-xs font-medium text-text-primary">Open structure tree</p>
+                  <p className="mt-1 text-[11px] text-text-muted">
+                    View folders, files, classes, and functions as a multi-root hierarchy.
+                  </p>
+                </div>
+                <Layers className="h-4 w-4 shrink-0 text-accent" />
+              </button>
+            )}
+          </div>
+
           {/* Search */}
           <div className="border-b border-border-subtle px-3 py-2">
             <div className="relative">
@@ -560,6 +656,10 @@ export const FileTreePanel = ({ onFocusNode }: FileTreePanelProps) => {
           <div className="flex items-center justify-between text-[10px] text-text-muted">
             <span>{graph.nodes.length} nodes</span>
             <span>{graph.relationships.length} edges</span>
+          </div>
+          <div className="mt-1 flex items-center justify-between text-[10px] text-text-muted">
+            <span>Canvas</span>
+            <span>{graphVisualizationMode === 'tree' ? 'Tree view' : 'Force view'}</span>
           </div>
         </div>
       )}

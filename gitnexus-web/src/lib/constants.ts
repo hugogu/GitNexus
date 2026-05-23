@@ -1,5 +1,8 @@
 import type { NodeLabel } from 'gitnexus-shared';
 
+export type GraphVisualizationMode = 'force' | 'tree';
+export type TreeSortMode = 'alphabetical' | 'inboundDegree' | 'outboundDegree';
+
 // Node colors by type - slightly muted for less visual noise
 export const NODE_COLORS: Record<NodeLabel, string> = {
   Project: '#a855f7', // Purple - prominent
@@ -133,6 +136,26 @@ export const FILTERABLE_LABELS: NodeLabel[] = [
 
 // Edge/Relation types
 export type EdgeType = 'CONTAINS' | 'DEFINES' | 'IMPORTS' | 'CALLS' | 'EXTENDS' | 'IMPLEMENTS';
+
+export const TREE_SORT_OPTIONS: Array<{ value: TreeSortMode; label: string }> = [
+  { value: 'alphabetical', label: 'A-Z' },
+  { value: 'inboundDegree', label: 'In Degree' },
+  { value: 'outboundDegree', label: 'Out Degree' },
+];
+
+export const TREE_HIERARCHY_EDGE_TYPES: readonly EdgeType[] = ['CONTAINS', 'DEFINES'];
+
+export const NON_PHYSICAL_TREE_LABELS: readonly NodeLabel[] = [
+  'Community',
+  'Process',
+  'Import',
+  'Route',
+  'Tool',
+];
+
+export const isPhysicalTreeNodeLabel = (label: NodeLabel): boolean => {
+  return !NON_PHYSICAL_TREE_LABELS.includes(label);
+};
 
 export const ALL_EDGE_TYPES: EdgeType[] = [
   'CONTAINS',

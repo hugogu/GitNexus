@@ -299,11 +299,11 @@ export const knowledgeGraphToGraphology = (
 
   knowledgeGraph.relationships.forEach((rel) => {
     if (graph.hasNode(rel.sourceId) && graph.hasNode(rel.targetId)) {
-      if (!graph.hasEdge(rel.sourceId, rel.targetId)) {
+      if (!graph.hasEdge(rel.id) && !graph.hasEdge(rel.sourceId, rel.targetId)) {
         const style = EDGE_STYLES[rel.type] || { color: '#4a4a5a', sizeMultiplier: 0.5 };
         const curvature = 0.12 + Math.random() * 0.08;
 
-        graph.addEdge(rel.sourceId, rel.targetId, {
+        graph.addEdgeWithKey(rel.id, rel.sourceId, rel.targetId, {
           size: edgeBaseSize * style.sizeMultiplier,
           color: style.color,
           relationType: rel.type,

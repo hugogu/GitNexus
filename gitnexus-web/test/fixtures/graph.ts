@@ -13,6 +13,14 @@ export function createFileNode(name: string, filePath?: string): GraphNode {
   };
 }
 
+export function createFolderNode(name: string, filePath: string): GraphNode {
+  return {
+    id: `Folder:${filePath}`,
+    label: 'Folder',
+    properties: { name, filePath },
+  };
+}
+
 export function createFunctionNode(name: string, filePath: string, line = 1): GraphNode {
   return {
     id: `Function:${filePath}:${name}:${line}`,
@@ -25,6 +33,22 @@ export function createClassNode(name: string, filePath: string): GraphNode {
   return {
     id: `Class:${filePath}:${name}`,
     label: 'Class',
+    properties: { name, filePath },
+  };
+}
+
+export function createMethodNode(name: string, filePath: string, line = 1): GraphNode {
+  return {
+    id: `Method:${filePath}:${name}:${line}`,
+    label: 'Method',
+    properties: { name, filePath, startLine: line, endLine: line + 5 },
+  };
+}
+
+export function createImportNode(name: string, filePath: string): GraphNode {
+  return {
+    id: `Import:${filePath}:${name}`,
+    label: 'Import',
     properties: { name, filePath },
   };
 }
@@ -66,5 +90,27 @@ export function createContainsRelationship(sourceId: string, targetId: string): 
     type: 'CONTAINS',
     confidence: 1.0,
     reason: '',
+  };
+}
+
+export function createDefinesRelationship(sourceId: string, targetId: string): GraphRelationship {
+  return {
+    id: `${sourceId}_DEFINES_${targetId}`,
+    sourceId,
+    targetId,
+    type: 'DEFINES',
+    confidence: 1.0,
+    reason: '',
+  };
+}
+
+export function createImportsRelationship(sourceId: string, targetId: string): GraphRelationship {
+  return {
+    id: `${sourceId}_IMPORTS_${targetId}`,
+    sourceId,
+    targetId,
+    type: 'IMPORTS',
+    confidence: 0.9,
+    reason: 'fixture',
   };
 }

@@ -11,6 +11,7 @@ const launchArgs = [
   '--enable-webgl',
   '--enable-unsafe-swiftshader',
 ];
+const frontendBaseUrl = process.env.FRONTEND_URL ?? 'http://localhost:5173';
 
 if (insecureE2E) {
   // Allow cross-origin requests to gitnexus serve on a different port when explicitly enabled.
@@ -23,7 +24,7 @@ export default defineConfig({
   timeout: 60_000,
   retries: process.env.CI ? 1 : 0,
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: frontendBaseUrl,
     trace: 'retain-on-failure',
     screenshot: 'retain-on-failure',
     video: 'retain-on-failure',

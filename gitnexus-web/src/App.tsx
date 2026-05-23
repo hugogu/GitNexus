@@ -4,11 +4,13 @@ import { DropZone } from './components/DropZone';
 import { LoadingOverlay } from './components/LoadingOverlay';
 import { Header } from './components/Header';
 import { GraphCanvas, GraphCanvasHandle } from './components/GraphCanvas';
+import { TreeCanvas, TreeCanvasHandle } from './components/TreeCanvas';
 import { RightPanel } from './components/RightPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { StatusBar } from './components/StatusBar';
 import { FileTreePanel } from './components/FileTreePanel';
 import { CodeReferencesPanel } from './components/CodeReferencesPanel';
+import { GitBranch, Layers } from '@/lib/lucide-icons';
 import { getActiveProviderConfig } from './core/llm/settings-service';
 import { createKnowledgeGraph } from './core/graph/graph';
 import {
@@ -39,6 +41,8 @@ const AppContent = () => {
     codeReferences,
     selectedNode,
     isCodePanelOpen,
+    graphVisualizationMode,
+    setGraphVisualizationMode,
     serverBaseUrl,
     setServerBaseUrl,
     availableRepos,
@@ -48,6 +52,7 @@ const AppContent = () => {
   } = useAppState();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
+  const treeCanvasRef = useRef<TreeCanvasHandle>(null);
   const [serverDisconnected, setServerDisconnected] = useState(false);
 
   const handleServerConnect = useCallback(
@@ -183,9 +188,29 @@ const AppContent = () => {
       });
   }, [handleServerConnect, setProgress, setViewMode, setServerBaseUrl, setAvailableRepos]);
 
-  const handleFocusNode = useCallback((nodeId: string) => {
-    graphCanvasRef.current?.focusNode(nodeId);
-  }, []);
+  const handleFocusNode = useCallback(
+    (nodeId: string) => {
+      if (graphVisualizationMode === 'tree') {
+        treeCanvasRef.current?.focusNode(nodeId);
+        return;
+      }
+      graphCanvasRef.current?.focusNode(nodeId);
+    },
+    [graphVisualizationMode],
+  );
+
+  const previousVisualizationModeRef = useRef(graphVisualizationMode);
+  useEffect(() => {
+    if (previousVisualizationModeRef.current === graphVisualizationMode) return;
+    previousVisualizationModeRef.current = graphVisualizationMode;
+    if (!selectedNode) return;
+
+    const frameId = requestAnimationFrame(() => {
+      handleFocusNode(selectedNode.id);
+    });
+
+    return () => cancelAnimationFrame(frameId);
+  }, [graphVisualizationMode, handleFocusNode, selectedNode]);
 
   // Handle settings saved - refresh and reinitialize agent
   // NOTE: Must be defined BEFORE any conditional returns (React hooks rule)
@@ -281,7 +306,45 @@ const AppContent = () => {
 
         {/* Graph area - takes remaining space */}
         <div className="relative min-w-0 flex-1">
-          <GraphCanvas ref={graphCanvasRef} />
+          <div className="pointer-events-auto absolute top-4 right-4 z-20">
+            <div
+              data-testid="graph-visualization-switch"
+              className="flex rounded-xl border border-border-subtle bg-elevated/90 p-1 shadow-lg backdrop-blur-sm"
+            >
+              <button
+                type="button"
+                aria-pressed={graphVisualizationMode === 'force'}
+                onClick={() => setGraphVisualizationMode('force')}
+                className={`flex items-center gap-2 rounded-lg px-3 py-2 text-xs transition-colors ${
+                  graphVisualizationMode === 'force'
+                    ? 'bg-accent text-white'
+                    : 'text-text-secondary hover:bg-hover hover:text-text-primary'
+                }`}
+              >
+                <GitBranch className="h-3.5 w-3.5" />
+                <span>Force</span>
+              </button>
+              <button
+                type="button"
+                aria-pressed={graphVisualizationMode === 'tree'}
+                onClick={() => setGraphVisualizationMode('tree')}
+                className={`flex items-center gap-2 rounded-lg px-3 py-2 text-xs transition-colors ${
+                  graphVisualizationMode === 'tree'
+                    ? 'bg-accent text-white'
+                    : 'text-text-secondary hover:bg-hover hover:text-text-primary'
+                }`}
+              >
+                <Layers className="h-3.5 w-3.5" />
+                <span>Tree</span>
+              </button>
+            </div>
+          </div>
+
+          {graphVisualizationMode === 'tree' ? (
+            <TreeCanvas ref={treeCanvasRef} />
+          ) : (
+            <GraphCanvas ref={graphCanvasRef} />
+          )}
 
           {/* Code References Panel (overlay) - does NOT resize the graph, it overlaps on top */}
           {isCodePanelOpen && (codeReferences.length > 0 || !!selectedNode) && (

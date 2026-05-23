@@ -14,13 +14,13 @@ import { useSigma } from '../hooks/useSigma';
 import { useAppState } from '../hooks/useAppState';
 import {
   knowledgeGraphToGraphology,
-  filterGraphByDepth,
   SigmaNodeAttributes,
   SigmaEdgeAttributes,
 } from '../lib/graph-adapter';
 import type { GraphNode } from 'gitnexus-shared';
 import { QueryFAB } from './QueryFAB';
 import Graph from 'graphology';
+import { getVisibleGraphSnapshot } from '../lib/graph-visibility';
 
 export interface GraphCanvasHandle {
   focusNode: (nodeId: string) => void;
@@ -74,6 +74,18 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     if (!isAIHighlightsEnabled) return new Map();
     return animatedNodes;
   }, [animatedNodes, isAIHighlightsEnabled]);
+
+  const visibleSnapshot = useMemo(
+    () =>
+      getVisibleGraphSnapshot(
+        graph,
+        visibleLabels,
+        visibleEdgeTypes,
+        appSelectedNode?.id ?? null,
+        depthFilter,
+      ),
+    [graph, visibleLabels, visibleEdgeTypes, appSelectedNode?.id, depthFilter],
+  );
 
   const nodeById = useMemo(() => {
     if (!graph) return new Map<string, GraphNode>();
@@ -146,7 +158,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     highlightedNodeIds: effectiveHighlightedNodeIds,
     blastRadiusNodeIds: effectiveBlastRadiusNodeIds,
     animatedNodes: effectiveAnimatedNodes,
-    visibleEdgeTypes,
+    visibleEdgeIds: visibleSnapshot?.visibleEdgeIds,
   });
 
   // Expose focusNode to parent via ref
@@ -192,18 +204,20 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     setSigmaGraph(sigmaGraph);
   }, [graph, nodeById, setSigmaGraph]);
 
-  // Update node visibility when filters change
+  // Update node visibility when the shared visible snapshot changes
   useEffect(() => {
     const sigma = sigmaRef.current;
-    if (!sigma) return;
+    if (!sigma || !visibleSnapshot) return;
 
     const sigmaGraph = sigma.getGraph() as Graph<SigmaNodeAttributes, SigmaEdgeAttributes>;
     if (sigmaGraph.order === 0) return; // Don't filter empty graph
 
-    filterGraphByDepth(sigmaGraph, appSelectedNode?.id || null, depthFilter, visibleLabels);
+    sigmaGraph.forEachNode((nodeId) => {
+      sigmaGraph.setNodeAttribute(nodeId, 'hidden', !visibleSnapshot.visibleNodeIds.has(nodeId));
+    });
     sigma.refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sigmaRef identity never changes
-  }, [visibleLabels, depthFilter, appSelectedNode]);
+  }, [visibleSnapshot]);
 
   // Sync app selected node with sigma
   useEffect(() => {

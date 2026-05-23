@@ -38,6 +38,7 @@ import { ERROR_RESET_DELAY_MS } from '../config/ui-constants';
 import { normalizePath } from '../lib/path-resolution';
 import { FILE_REF_REGEX, NODE_REF_REGEX } from '../lib/grounding-patterns';
 import { GraphStateProvider, useGraphState } from './app-state/graph';
+import type { GraphVisualizationMode, TreeSortMode } from '../lib/constants';
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
@@ -85,6 +86,10 @@ interface AppState {
   // Graph data
   graph: KnowledgeGraph | null;
   setGraph: (graph: KnowledgeGraph | null) => void;
+  graphVisualizationMode: GraphVisualizationMode;
+  setGraphVisualizationMode: (mode: GraphVisualizationMode) => void;
+  treeSortMode: TreeSortMode;
+  setTreeSortMode: (mode: TreeSortMode) => void;
 
   // Selection
   selectedNode: GraphNode | null;
@@ -209,6 +214,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   const {
     graph,
     setGraph,
+    graphVisualizationMode,
+    setGraphVisualizationMode,
+    treeSortMode,
+    setTreeSortMode,
     selectedNode,
     setSelectedNode,
     visibleLabels,
@@ -1212,6 +1221,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setViewMode,
     graph,
     setGraph,
+    graphVisualizationMode,
+    setGraphVisualizationMode,
+    treeSortMode,
+    setTreeSortMode,
     selectedNode,
     setSelectedNode,
     isRightPanelOpen,
