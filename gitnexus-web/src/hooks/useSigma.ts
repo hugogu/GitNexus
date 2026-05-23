@@ -142,10 +142,10 @@ const TREE_VELOCITY_DEADZONE = 0.01;
 const TREE_LAYER_GRAVITY = 0.06; // stronger gravity keeps nodes near their layer center
 const TREE_LAYER_BAND_HALF = 55; // ±55px from layer center Y
 const TREE_LAYER_BOUNDARY_RESISTANCE = 10; // progressive resistance near band edges
-// Spread force: weak pull toward ideal even-spacing rank within each layer.
-// Balanced against springs: hierarchy-connected clusters resist and stay grouped;
-// isolated / same-layer-only nodes fill the gaps.
-const TREE_SPREAD_STRENGTH = 0.0025;
+// Spread force: pull toward ideal rank-based even spacing within each layer.
+// Must be strong enough to redistribute dense clusters but weaker than hierarchy
+// springs (so connected groups stay together while isolated nodes fill gaps).
+const TREE_SPREAD_STRENGTH = 0.006;
 
 const TREE_EDGE_WEIGHTS: Record<string, number> = {
   CONTAINS: 0.09,
@@ -741,7 +741,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
           const xStretch = Math.abs(dx) - xRestLength;
           if (xStretch > 0) {
             const xWeight = edgeAttrs.isHierarchyEdge ? rawWeight : Math.min(rawWeight, 0.1);
-            const fxX = Math.sign(dx) * xStretch * xWeight * 0.18 * dtScale;
+            const fxX = Math.sign(dx) * xStretch * xWeight * 0.3 * dtScale;
             forceX.set(source, (forceX.get(source) ?? 0) + fxX);
             forceX.set(target, (forceX.get(target) ?? 0) - fxX);
           }
@@ -787,10 +787,11 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
             if (dist > TREE_REPULSION_RANGE) continue;
 
             const sameLayer = nodeA.layer === nodeB.layer;
-            // Same-layer: full repulsion to prevent horizontal overlap.
-            // Cross-layer: 25 % — enough to stop complete overlap, weak enough
-            // to let the X spring pull nodes past intermediate layers.
-            const repulsionStrength = sameLayer ? 160 : 40;
+            // Same-layer repulsion reduced from 160→100 so the stronger X spring
+            // (0.30) can now overcome collective repulsion from 3-4 nearby nodes.
+            // Cross-layer kept low (28) so intermediate-layer nodes don't block
+            // parent-child X alignment.
+            const repulsionStrength = sameLayer ? 100 : 28;
             const minGap = Math.max(28, (nodeA.size + nodeB.size) * 1.8);
             let repulsion =
               (1 / (dist + 8) - 1 / (TREE_REPULSION_RANGE + 8)) * repulsionStrength * dtScale;
@@ -907,9 +908,9 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
 
         if (
           elapsed >= TREE_LAYOUT_MIN_DURATION &&
-          maxVelocity < 0.035 &&
-          activeNodes <= Math.max(2, Math.floor(graph.order * 0.01)) &&
-          averageVelocity < 0.03
+          maxVelocity < 0.022 &&
+          activeNodes <= Math.max(2, Math.floor(graph.order * 0.008)) &&
+          averageVelocity < 0.016
         ) {
           treeStableFramesRef.current += 1;
         } else {

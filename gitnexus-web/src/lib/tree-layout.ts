@@ -475,12 +475,13 @@ export function calculateTreeLayout(graph: KnowledgeGraph): Map<string, TreeNode
     }
   }
 
-  // 8. Density equalization: nudge each node 35 % toward the position it would
-  // occupy if nodes in its layer were spaced perfectly evenly.  Nodes that are
-  // strongly spring-connected will resist (the physics later reinforces them),
-  // while nodes in sparse regions fill in the gaps.  Two passes smooth out
-  // the coarsest density peaks left by the hierarchical spring relaxation.
-  for (let pass = 0; pass < 2; pass++) {
+  // 8. Density equalization: repeatedly nudge each node toward the position it
+  // would occupy if nodes in its layer were spaced perfectly evenly.  Five passes
+  // at 42 % nudge drives the layout ~94 % toward ideal even distribution
+  // ((1-0.42)^5 ≈ 0.06 residual from original).  The physics simulation later
+  // reinforces connected clusters; this step just ensures the simulation starts
+  // with balanced density rather than fighting a heavily skewed initial state.
+  for (let pass = 0; pass < 5; pass++) {
     for (const layerNodeIds of nodeIdsByLayer) {
       if (layerNodeIds.length < 2) continue;
       layerNodeIds.sort((a, b) => (positions.get(a)?.x ?? 0) - (positions.get(b)?.x ?? 0));
@@ -490,7 +491,7 @@ export function calculateTreeLayout(graph: KnowledgeGraph): Map<string, TreeNode
         const pos = positions.get(layerNodeIds[i]);
         if (!pos) continue;
         const idealX = -MAX_X + (i + 0.5) * spacing;
-        pos.x = clamp(pos.x * 0.65 + idealX * 0.35, -MAX_X, MAX_X);
+        pos.x = clamp(pos.x * 0.58 + idealX * 0.42, -MAX_X, MAX_X);
       }
     }
   }
