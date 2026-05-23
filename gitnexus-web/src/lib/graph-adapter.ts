@@ -2,6 +2,7 @@ import Graph from 'graphology';
 import type { NodeLabel } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../core/graph/types';
 import { NODE_COLORS, NODE_SIZES, getCommunityColor } from './constants';
+import { calculateTreeLayout } from './tree-layout';
 
 export interface SigmaNodeAttributes {
   x: number;
@@ -28,6 +29,7 @@ export interface SigmaEdgeAttributes {
   type?: string;
   curvature?: number;
   zIndex?: number;
+  isHierarchyEdge?: boolean;
 }
 
 /**
@@ -309,6 +311,78 @@ export const knowledgeGraphToGraphology = (
           relationType: rel.type,
           type: 'curved',
           curvature: curvature,
+        });
+      }
+    }
+  });
+
+  return graph;
+};
+
+export const knowledgeGraphToTreeGraphology = (
+  knowledgeGraph: KnowledgeGraph,
+  sortMode: 'alphabetical' | 'degree' = 'alphabetical',
+): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> => {
+  const graph = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>();
+  const nodeCount = knowledgeGraph.nodes.length;
+  const positions = calculateTreeLayout(knowledgeGraph, sortMode);
+
+  // Add nodes with tree positions
+  for (const node of knowledgeGraph.nodes) {
+    const pos = positions.get(node.id);
+    if (!pos) continue;
+
+    const baseSize = NODE_SIZES[node.label] || 8;
+    const scaledSize = getScaledNodeSize(baseSize, nodeCount);
+    const finalSize = Math.max(2, pos.size * (scaledSize / baseSize));
+
+    graph.addNode(node.id, {
+      x: pos.x,
+      y: pos.y,
+      size: finalSize,
+      color: NODE_COLORS[node.label] || '#9ca3af',
+      label: node.properties.name,
+      nodeType: node.label,
+      filePath: node.properties.filePath,
+      startLine: node.properties.startLine,
+      endLine: node.properties.endLine,
+      hidden: false,
+      mass: 1, // No force layout in tree view
+    });
+  }
+
+  // Add edges with tree-specific styling
+  const edgeBaseSize = nodeCount > 20000 ? 0.4 : nodeCount > 5000 ? 0.6 : 1.0;
+
+  const HIERARCHY_EDGE_STYLES: Record<string, { color: string; sizeMultiplier: number }> = {
+    CONTAINS: { color: '#3a3a4a', sizeMultiplier: 0.3 },
+    DEFINES: { color: '#3a4a4a', sizeMultiplier: 0.3 },
+    IMPORTS: { color: '#3a3a4a', sizeMultiplier: 0.3 },
+  };
+
+  const CROSS_EDGE_STYLES: Record<string, { color: string; sizeMultiplier: number }> = {
+    CALLS: { color: '#7c3aed', sizeMultiplier: 0.8 },
+    EXTENDS: { color: '#c2410c', sizeMultiplier: 1.0 },
+    IMPLEMENTS: { color: '#be185d', sizeMultiplier: 0.9 },
+  };
+
+  knowledgeGraph.relationships.forEach((rel) => {
+    if (graph.hasNode(rel.sourceId) && graph.hasNode(rel.targetId)) {
+      if (!graph.hasEdge(rel.sourceId, rel.targetId)) {
+        const isHierarchy = HIERARCHY_EDGE_STYLES[rel.type] !== undefined;
+        const style = isHierarchy
+          ? HIERARCHY_EDGE_STYLES[rel.type]
+          : CROSS_EDGE_STYLES[rel.type] || { color: '#4a4a5a', sizeMultiplier: 0.5 };
+
+        const curvature = 0.1 + Math.random() * 0.1;
+
+        graph.addEdge(rel.sourceId, rel.targetId, {
+          size: edgeBaseSize * style.sizeMultiplier,
+          color: style.color,
+          relationType: rel.type,
+          type: 'curved',
+          curvature: curvature,
+          isHierarchyEdge: isHierarchy,
         });
       }
     }
