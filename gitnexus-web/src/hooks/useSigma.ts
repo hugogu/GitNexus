@@ -62,6 +62,7 @@ interface UseSigmaOptions {
   blastRadiusNodeIds?: Set<string>;
   animatedNodes?: Map<string, NodeAnimation>;
   visibleEdgeTypes?: EdgeType[];
+  layoutMode?: 'force' | 'tree';
 }
 
 interface UseSigmaReturn {
@@ -560,10 +561,14 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       sigma.setGraph(newGraph);
       setSelectedNode(null);
 
-      runLayout(newGraph);
+      // Only run force layout in force mode
+      if (options.layoutMode !== 'tree') {
+        runLayout(newGraph);
+      }
+
       sigma.getCamera().animatedReset({ duration: 500 });
     },
-    [runLayout, setSelectedNode],
+    [runLayout, setSelectedNode, options.layoutMode],
   );
 
   const focusNode = useCallback((nodeId: string) => {
