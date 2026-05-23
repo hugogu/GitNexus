@@ -142,10 +142,11 @@ const TREE_VELOCITY_DEADZONE = 0.01;
 const TREE_LAYER_GRAVITY = 0.06; // stronger gravity keeps nodes near their layer center
 const TREE_LAYER_BAND_HALF = 55; // ±55px from layer center Y
 const TREE_LAYER_BOUNDARY_RESISTANCE = 10; // progressive resistance near band edges
-// Spread force: pull toward ideal rank-based even spacing within each layer.
-// Must be strong enough to redistribute dense clusters but weaker than hierarchy
-// springs (so connected groups stay together while isolated nodes fill gaps).
-const TREE_SPREAD_STRENGTH = 0.006;
+// Spread force: fine-tune density within each layer during physics.
+// Kept deliberately weak (0.003) because the initial proportional layout already
+// distributes nodes near their ideal positions — aggressive spread would fight
+// the hierarchy springs and push edge-parented children away from their parents.
+const TREE_SPREAD_STRENGTH = 0.003;
 
 const TREE_EDGE_WEIGHTS: Record<string, number> = {
   CONTAINS: 0.09,

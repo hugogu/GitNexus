@@ -100,27 +100,6 @@ function deterministicHash(str: string): number {
   return (Math.abs(hash) % 10000) / 10000;
 }
 
-/**
- * Calculate grid dimensions (cols × rows) for a layer.
- * Aims for a balanced aspect ratio within the available space.
- */
-function calculateGrid(nodeCount: number, availableWidth: number, availableHeight: number) {
-  if (nodeCount <= 0) return { cols: 0, rows: 0, gapX: 0, gapY: 0 };
-
-  const maxCols = Math.max(1, Math.floor(availableWidth / MIN_NODE_GAP));
-
-  // Target: grid aspect ratio close to availableWidth / availableHeight
-  const targetCols = Math.sqrt(nodeCount * (availableWidth / availableHeight));
-  const cols = Math.min(maxCols, Math.max(1, Math.round(targetCols)));
-  const rows = Math.ceil(nodeCount / cols);
-
-  // Evenly distribute nodes within available space
-  const gapX = availableWidth / cols;
-  const gapY = availableHeight / rows;
-
-  return { cols, rows, gapX, gapY };
-}
-
 function getNodeLayer(node: GraphNode): number {
   return TYPE_TO_LAYER[node.label] ?? DEFAULT_LAYER;
 }
@@ -223,83 +202,164 @@ function enforceLayerSpacing(
 }
 
 /**
- * Initialize positions using type-layered grid layout.
+ * Initialize positions using proportional X allocation.
  *
- * When `parentsByChild` is provided, layers 1-3 are sorted by the average X
- * of their hierarchy parents instead of alphabetically.  This groups children
- * of the same parent contiguously in the layer, which minimises parent-child
- * edge length by construction before any spring relaxation runs.
+ * Each parent in layer N is allocated a horizontal slice proportional to how
+ * many direct hierarchy children it has in layer N+1.  Children are then placed
+ * evenly within their parent's slice.  Orphan nodes (no placed hierarchy parent)
+ * fill a proportional slice at the far right.
+ *
+ * Why this is better than uniform distribution:
+ *   1. Dense parents (many children) get more canvas space  →  no artificial
+ *      crowding in the centre even before the physics simulation runs.
+ *   2. Each child starts within its parent's X slice  →  parent-child edges are
+ *      short by construction, so the spring system converges quickly.
+ *   3. Orphan nodes land at the right end; their spring connections pull them
+ *      toward better positions at runtime without fighting a spread force.
  */
-function initGridPositions(
+function initProportionalPositions(
   graph: KnowledgeGraph,
-  parentsByChild?: Map<string, string[]>,
+  parentsByChild: Map<string, string[]>,
 ): Map<string, TreeNodePosition> {
   const positions = new Map<string, TreeNodePosition>();
 
-  const nodesByLayer: GraphNode[][] = [[], [], [], []];
+  // Group nodes by layer and build a fast layer-lookup map.
+  const nodesByLayer: GraphNode[][] = Array.from({ length: LAYER_COUNT }, () => []);
+  const nodeLayerMap = new Map<string, number>();
   for (const node of graph.nodes) {
     const layer = getNodeLayer(node);
     if (layer >= 0 && layer < LAYER_COUNT) {
       nodesByLayer[layer].push(node);
-    }
-  }
-
-  for (let layer = 0; layer < LAYER_COUNT; layer++) {
-    if (layer === 0 || !parentsByChild) {
-      // Layer 0 has no hierarchy parents — sort alphabetically.
-      nodesByLayer[layer].sort((a, b) => a.properties.name.localeCompare(b.properties.name));
-    } else {
-      // Layers 1-3: sort by the average X of hierarchy parents already placed
-      // in the previous layer.  Nodes with no known parent go to the right.
-      nodesByLayer[layer].sort((a, b) => {
-        const parentsA = parentsByChild.get(a.id) ?? [];
-        const parentsB = parentsByChild.get(b.id) ?? [];
-        const avgXA =
-          parentsA.length > 0
-            ? parentsA.reduce((s, p) => s + (positions.get(p)?.x ?? 0), 0) / parentsA.length
-            : Infinity;
-        const avgXB =
-          parentsB.length > 0
-            ? parentsB.reduce((s, p) => s + (positions.get(p)?.x ?? 0), 0) / parentsB.length
-            : Infinity;
-        if (Math.abs(avgXA - avgXB) > 0.5) return avgXA - avgXB;
-        return a.properties.name.localeCompare(b.properties.name);
-      });
+      nodeLayerMap.set(node.id, layer);
     }
   }
 
   const availableWidth = CANVAS_WIDTH - PADDING_X * 2;
+  const halfWidth = availableWidth / 2;
   const availableHeight = LAYER_HEIGHT - PADDING_Y * 2;
 
-  for (let layer = 0; layer < LAYER_COUNT; layer++) {
-    const nodes = nodesByLayer[layer];
-    if (nodes.length === 0) continue;
-
-    const { cols, rows, gapX, gapY } = calculateGrid(nodes.length, availableWidth, availableHeight);
-
+  // Y centre for a given logical layer (layer 0 = top).
+  const getLayerY = (layer: number): number => {
     const visualLayer = LAYER_COUNT - 1 - layer;
-    const layerBaseY = visualLayer * LAYER_HEIGHT + PADDING_Y;
-    const layerActualHeight = rows * gapY;
-    const verticalOffset = (availableHeight - layerActualHeight) / 2;
+    return visualLayer * LAYER_HEIGHT + PADDING_Y + availableHeight / 2;
+  };
 
-    for (let i = 0; i < nodes.length; i++) {
-      const node = nodes[i];
-      const row = Math.floor(i / cols);
-      const col = i % cols;
-
-      const x = -availableWidth / 2 + (col + 0.5) * gapX;
-      const y = layerBaseY + verticalOffset + (row + 0.5) * gapY;
-      const size = calculateNodeSize(layer, node.label);
-
-      positions.set(node.id, { x, y, size, depth: layer });
+  // --- Layer 0: sorted alphabetically, evenly spaced ---
+  const layer0Nodes = [...nodesByLayer[0]].sort((a, b) =>
+    a.properties.name.localeCompare(b.properties.name),
+  );
+  if (layer0Nodes.length > 0) {
+    const spacing = availableWidth / layer0Nodes.length;
+    for (let i = 0; i < layer0Nodes.length; i++) {
+      const node = layer0Nodes[i];
+      positions.set(node.id, {
+        x: -halfWidth + (i + 0.5) * spacing,
+        y: getLayerY(0),
+        size: calculateNodeSize(0, node.label),
+        depth: 0,
+      });
     }
   }
 
-  if (positions.size > 0) {
-    const centerY = CANVAS_HEIGHT / 2;
-    for (const pos of positions.values()) {
-      pos.y -= centerY;
+  // --- Layers 1-3: proportional allocation from their parents ---
+  for (let layer = 1; layer < LAYER_COUNT; layer++) {
+    const layerNodes = nodesByLayer[layer];
+    if (layerNodes.length === 0) continue;
+
+    const layerY = getLayerY(layer);
+
+    // For each node, find its "primary parent": the already-placed hierarchy
+    // parent with the highest layer index (= closest ancestor in the tree).
+    // Walking all parents and picking the deepest-placed one means a Method
+    // prefers its Class over a distant Package, for example.
+    const assignedParent = new Map<string, string>();
+    for (const node of layerNodes) {
+      const parents = parentsByChild.get(node.id) ?? [];
+      let bestParent: string | null = null;
+      let bestParentLayer = -1;
+      for (const p of parents) {
+        if (!positions.has(p)) continue; // not yet placed
+        const pLayer = nodeLayerMap.get(p) ?? -1;
+        if (pLayer > bestParentLayer) {
+          bestParentLayer = pLayer;
+          bestParent = p;
+        }
+      }
+      if (bestParent) assignedParent.set(node.id, bestParent);
     }
+
+    // Bucket nodes into parent groups or orphans.
+    const childrenOfParent = new Map<string, GraphNode[]>();
+    const orphans: GraphNode[] = [];
+    for (const node of layerNodes) {
+      const p = assignedParent.get(node.id);
+      if (!p) {
+        orphans.push(node);
+      } else {
+        if (!childrenOfParent.has(p)) childrenOfParent.set(p, []);
+        childrenOfParent.get(p)!.push(node);
+      }
+    }
+
+    // Sort within each parent's group and orphans alphabetically.
+    for (const children of childrenOfParent.values()) {
+      children.sort((a, b) => a.properties.name.localeCompare(b.properties.name));
+    }
+    orphans.sort((a, b) => a.properties.name.localeCompare(b.properties.name));
+
+    // Sort active parents left-to-right by their placed X position.
+    const activeParents = [...childrenOfParent.keys()].sort(
+      (a, b) => (positions.get(a)?.x ?? 0) - (positions.get(b)?.x ?? 0),
+    );
+
+    const totalParented = layerNodes.length - orphans.length;
+
+    // Divide the full canvas width:
+    //   • parented children  →  (totalParented / total) fraction of width
+    //   • orphans            →  remaining fraction at the right
+    const parentedWidth =
+      totalParented > 0 ? availableWidth * (totalParented / layerNodes.length) : 0;
+    const orphanWidth = availableWidth - parentedWidth;
+
+    let curX = -halfWidth;
+
+    // Place each parent's children in a sub-slice proportional to child count.
+    for (const parentId of activeParents) {
+      const children = childrenOfParent.get(parentId) ?? [];
+      if (children.length === 0) continue;
+
+      const slotWidth = (children.length / totalParented) * parentedWidth;
+      const childSpacing = slotWidth / children.length;
+
+      for (let i = 0; i < children.length; i++) {
+        positions.set(children[i].id, {
+          x: curX + (i + 0.5) * childSpacing,
+          y: layerY,
+          size: calculateNodeSize(layer, children[i].label),
+          depth: layer,
+        });
+      }
+      curX += slotWidth;
+    }
+
+    // Orphans fill the rightmost slice.
+    if (orphans.length > 0 && orphanWidth > 0) {
+      const orphanSpacing = orphanWidth / orphans.length;
+      for (let i = 0; i < orphans.length; i++) {
+        positions.set(orphans[i].id, {
+          x: curX + (i + 0.5) * orphanSpacing,
+          y: layerY,
+          size: calculateNodeSize(layer, orphans[i].label),
+          depth: layer,
+        });
+      }
+    }
+  }
+
+  // Shift Y so the layout is centred at y = 0.
+  const centerY = CANVAS_HEIGHT / 2;
+  for (const pos of positions.values()) {
+    pos.y -= centerY;
   }
 
   return positions;
@@ -310,16 +370,17 @@ function initGridPositions(
  * structure-aware horizontal branch shaping.
  */
 export function calculateTreeLayout(graph: KnowledgeGraph): Map<string, TreeNodePosition> {
-  // Build hierarchy maps first — initGridPositions needs parentsByChild to sort
-  // layers 1-3 by parent X so children of the same parent are contiguous.
+  // Build hierarchy maps before initial placement so initProportionalPositions
+  // can assign each node to its closest placed ancestor's X slice.
   const nodeIdsByLayer = buildLayerNodeIds(graph);
   const { childrenByParent, parentsByChild } = buildHierarchyMaps(graph);
 
-  // 1. Start with hierarchy-aware grid layout.
-  const positions = initGridPositions(graph, parentsByChild);
+  // 1. Start with proportional X allocation: each parent gets a canvas slice
+  // proportional to its child count, so dense subtrees never crowd the centre.
+  const positions = initProportionalPositions(graph, parentsByChild);
 
   // 2. Add subtle Y jitter only — X jitter would scramble the hierarchy ordering
-  // that initGridPositions just established (especially bad when node spacing < jitter).
+  // that initProportionalPositions established (especially bad when node spacing < jitter).
   for (const [nodeId, pos] of positions) {
     pos.y += (deterministicHash(nodeId + 'y') - 0.5) * 20;
   }
@@ -472,27 +533,6 @@ export function calculateTreeLayout(graph: KnowledgeGraph): Map<string, TreeNode
 
     for (const pos of positions.values()) {
       pos.x = (pos.x - centerX) * scale;
-    }
-  }
-
-  // 8. Density equalization: repeatedly nudge each node toward the position it
-  // would occupy if nodes in its layer were spaced perfectly evenly.  Five passes
-  // at 42 % nudge drives the layout ~94 % toward ideal even distribution
-  // ((1-0.42)^5 ≈ 0.06 residual from original).  The physics simulation later
-  // reinforces connected clusters; this step just ensures the simulation starts
-  // with balanced density rather than fighting a heavily skewed initial state.
-  for (let pass = 0; pass < 5; pass++) {
-    for (const layerNodeIds of nodeIdsByLayer) {
-      if (layerNodeIds.length < 2) continue;
-      layerNodeIds.sort((a, b) => (positions.get(a)?.x ?? 0) - (positions.get(b)?.x ?? 0));
-      const count = layerNodeIds.length;
-      const spacing = (MAX_X * 2) / count;
-      for (let i = 0; i < count; i++) {
-        const pos = positions.get(layerNodeIds[i]);
-        if (!pos) continue;
-        const idealX = -MAX_X + (i + 0.5) * spacing;
-        pos.x = clamp(pos.x * 0.58 + idealX * 0.42, -MAX_X, MAX_X);
-      }
     }
   }
 
