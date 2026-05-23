@@ -224,8 +224,16 @@ function enforceLayerSpacing(
 
 /**
  * Initialize positions using type-layered grid layout.
+ *
+ * When `parentsByChild` is provided, layers 1-3 are sorted by the average X
+ * of their hierarchy parents instead of alphabetically.  This groups children
+ * of the same parent contiguously in the layer, which minimises parent-child
+ * edge length by construction before any spring relaxation runs.
  */
-function initGridPositions(graph: KnowledgeGraph): Map<string, TreeNodePosition> {
+function initGridPositions(
+  graph: KnowledgeGraph,
+  parentsByChild?: Map<string, string[]>,
+): Map<string, TreeNodePosition> {
   const positions = new Map<string, TreeNodePosition>();
 
   const nodesByLayer: GraphNode[][] = [[], [], [], []];
@@ -237,9 +245,27 @@ function initGridPositions(graph: KnowledgeGraph): Map<string, TreeNodePosition>
   }
 
   for (let layer = 0; layer < LAYER_COUNT; layer++) {
-    nodesByLayer[layer].sort((a, b) => {
-      return a.properties.name.localeCompare(b.properties.name);
-    });
+    if (layer === 0 || !parentsByChild) {
+      // Layer 0 has no hierarchy parents — sort alphabetically.
+      nodesByLayer[layer].sort((a, b) => a.properties.name.localeCompare(b.properties.name));
+    } else {
+      // Layers 1-3: sort by the average X of hierarchy parents already placed
+      // in the previous layer.  Nodes with no known parent go to the right.
+      nodesByLayer[layer].sort((a, b) => {
+        const parentsA = parentsByChild.get(a.id) ?? [];
+        const parentsB = parentsByChild.get(b.id) ?? [];
+        const avgXA =
+          parentsA.length > 0
+            ? parentsA.reduce((s, p) => s + (positions.get(p)?.x ?? 0), 0) / parentsA.length
+            : Infinity;
+        const avgXB =
+          parentsB.length > 0
+            ? parentsB.reduce((s, p) => s + (positions.get(p)?.x ?? 0), 0) / parentsB.length
+            : Infinity;
+        if (Math.abs(avgXA - avgXB) > 0.5) return avgXA - avgXB;
+        return a.properties.name.localeCompare(b.properties.name);
+      });
+    }
   }
 
   const availableWidth = CANVAS_WIDTH - PADDING_X * 2;
@@ -284,17 +310,18 @@ function initGridPositions(graph: KnowledgeGraph): Map<string, TreeNodePosition>
  * structure-aware horizontal branch shaping.
  */
 export function calculateTreeLayout(graph: KnowledgeGraph): Map<string, TreeNodePosition> {
-  // 1. Start with grid layout (provides good X distribution)
-  const positions = initGridPositions(graph);
+  // Build hierarchy maps first — initGridPositions needs parentsByChild to sort
+  // layers 1-3 by parent X so children of the same parent are contiguous.
   const nodeIdsByLayer = buildLayerNodeIds(graph);
   const { childrenByParent, parentsByChild } = buildHierarchyMaps(graph);
 
-  // 2. Add organic jitter to avoid rigid grid appearance
+  // 1. Start with hierarchy-aware grid layout.
+  const positions = initGridPositions(graph, parentsByChild);
+
+  // 2. Add subtle Y jitter only — X jitter would scramble the hierarchy ordering
+  // that initGridPositions just established (especially bad when node spacing < jitter).
   for (const [nodeId, pos] of positions) {
-    const jitterX = (deterministicHash(nodeId) - 0.5) * 35;
-    const jitterY = (deterministicHash(nodeId + 'y') - 0.5) * 25;
-    pos.x += jitterX;
-    pos.y += jitterY;
+    pos.y += (deterministicHash(nodeId + 'y') - 0.5) * 20;
   }
 
   // 3. Use structural edges to create a tree-like horizontal ordering while

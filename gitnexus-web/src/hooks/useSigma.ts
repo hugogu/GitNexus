@@ -675,36 +675,60 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
           forceY.set(nodeId, (centerY - attrs.y) * TREE_LAYER_GRAVITY * dtScale);
         });
 
-        // 2. Edge springs in 2D: edges attract connected nodes in both X and Y
+        // 2. Edge springs — X and Y handled separately.
+        //
+        // Root cause of long horizontal edges: the previous 2D spring projected
+        // force through (dx/distance, dy/distance).  When the Y layer gap
+        // dominates (|dy|≈200, |dx|≈30) the X component shrinks to ~15% of
+        // the total spring force, too weak to overcome sibling repulsion.
+        //
+        // Fix: compute X spring from |dx| alone.  This keeps full strength
+        // regardless of how far apart two nodes are in Y.
         graph.forEachEdge((edge, edgeAttrs, source, target, sourceAttrs, targetAttrs) => {
           const dx = targetAttrs.x - sourceAttrs.x;
+          const rawWeight = TREE_EDGE_WEIGHTS[edgeAttrs.relationType] ?? 0.18;
+
+          // 2a. Pure X spring.
+          // Hierarchy edges: zero rest length so children want to sit directly
+          // under their parent (repulsion then spreads siblings out naturally).
+          // Cross edges: 60 px rest so far-spanning CALLS/IMPORTS edges only
+          // pull when really stretched, and their weight is capped so they
+          // don't override the hierarchy structure.
+          const xRestLength = edgeAttrs.isHierarchyEdge ? 0 : 60;
+          const xStretch = Math.abs(dx) - xRestLength;
+          if (xStretch > 0) {
+            const xWeight = edgeAttrs.isHierarchyEdge ? rawWeight : Math.min(rawWeight, 0.1);
+            const fxX = Math.sign(dx) * xStretch * xWeight * 0.18 * dtScale;
+            forceX.set(source, (forceX.get(source) ?? 0) + fxX);
+            forceX.set(target, (forceX.get(target) ?? 0) - fxX);
+          }
+
+          // 2b. Weak Y spring — layer gravity handles most vertical placement;
+          // this just prevents extreme cross-layer stretching.
           const dy = targetAttrs.y - sourceAttrs.y;
           const distance = Math.sqrt(dx * dx + dy * dy) || 1;
           const layerGap = Math.abs((targetAttrs.treeLayer ?? 0) - (sourceAttrs.treeLayer ?? 0));
-          const restLength =
+          const yRestLength =
             (edgeAttrs.isHierarchyEdge ? 70 : 95) +
             layerGap * (edgeAttrs.isHierarchyEdge ? 28 : 36);
-          const stretch = distance - restLength;
-
-          if (stretch <= 0) return;
-
-          const weight = TREE_EDGE_WEIGHTS[edgeAttrs.relationType] ?? 0.18;
-          // Stronger X spring (0.04) so stretched edges can pull nodes past local repulsion barriers.
-          const fx = (dx / distance) * stretch * weight * 0.04 * dtScale;
-          // Y spring is weaker to avoid fighting layer gravity
-          const fy = (dy / distance) * stretch * weight * 0.012 * dtScale;
-
-          forceX.set(source, (forceX.get(source) ?? 0) + fx);
-          forceY.set(source, (forceY.get(source) ?? 0) + fy);
-          forceX.set(target, (forceX.get(target) ?? 0) - fx);
-          forceY.set(target, (forceY.get(target) ?? 0) - fy);
+          const yStretch = distance - yRestLength;
+          if (yStretch > 0) {
+            const fy = (dy / distance) * yStretch * rawWeight * 0.008 * dtScale;
+            forceY.set(source, (forceY.get(source) ?? 0) + fy);
+            forceY.set(target, (forceY.get(target) ?? 0) - fy);
+          }
         });
 
         // 3. Node repulsion in 2D: all pairs within range (cross-layer included)
-        // Sort by X for O(n·k) early-exit: once dx > range, all further pairs are too far
+        // Sort by X for O(n·k) early-exit: once dx > range, all further pairs are too far.
+        //
+        // Cross-layer pairs use reduced repulsion (25 % of same-layer strength).
+        // Full-strength cross-layer repulsion was the main barrier preventing
+        // nodes from moving horizontally to align with their parents — a node
+        // in Layer 2 would block a Layer 1 File from moving toward its Package.
         const nodeList = graph.nodes().map((id) => {
           const a = graph.getNodeAttributes(id);
-          return { id, x: a.x, y: a.y, size: a.size ?? 6 };
+          return { id, x: a.x, y: a.y, size: a.size ?? 6, layer: a.treeLayer ?? 0 };
         });
         nodeList.sort((a, b) => a.x - b.x);
 
@@ -719,9 +743,15 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
             const dist = Math.sqrt(dx * dx + dy * dy) || 1;
             if (dist > TREE_REPULSION_RANGE) continue;
 
+            const sameLayer = nodeA.layer === nodeB.layer;
+            // Same-layer: full repulsion to prevent horizontal overlap.
+            // Cross-layer: 25 % — enough to stop complete overlap, weak enough
+            // to let the X spring pull nodes past intermediate layers.
+            const repulsionStrength = sameLayer ? 160 : 40;
             const minGap = Math.max(28, (nodeA.size + nodeB.size) * 1.8);
-            let repulsion = (1 / (dist + 8) - 1 / (TREE_REPULSION_RANGE + 8)) * 180 * dtScale;
-            if (dist < minGap) {
+            let repulsion =
+              (1 / (dist + 8) - 1 / (TREE_REPULSION_RANGE + 8)) * repulsionStrength * dtScale;
+            if (dist < minGap && sameLayer) {
               repulsion += (minGap - dist) * 0.1 * dtScale;
             }
             if (repulsion <= 0) continue;
