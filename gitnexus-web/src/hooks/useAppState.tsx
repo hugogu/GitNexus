@@ -127,10 +127,6 @@ interface AppState {
   graphViewMode: 'force' | 'tree';
   setGraphViewMode: (mode: 'force' | 'tree') => void;
 
-  // Tree sort mode
-  treeSortMode: 'alphabetical' | 'degree' | 'auto';
-  setTreeSortMode: (mode: 'alphabetical' | 'degree' | 'auto') => void;
-
   // Query state
   highlightedNodeIds: Set<string>;
   setHighlightedNodeIds: (ids: Set<string>) => void;
@@ -242,8 +238,6 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setHighlightedNodeIds,
     graphViewMode,
     setGraphViewMode,
-    treeSortMode,
-    setTreeSortMode,
   } = useGraphState();
 
   // Right Panel
@@ -1280,8 +1274,6 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setDepthFilter,
     graphViewMode,
     setGraphViewMode,
-    treeSortMode,
-    setTreeSortMode,
     highlightedNodeIds,
     setHighlightedNodeIds,
     aiCitationHighlightedNodeIds,

@@ -53,8 +53,6 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     animatedNodes,
     graphViewMode,
     setGraphViewMode,
-    treeSortMode,
-    setTreeSortMode,
   } = useAppState();
   const [hoveredNodeName, setHoveredNodeName] = useState<string | null>(null);
 
@@ -169,13 +167,6 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     [graphViewMode, setGraphViewMode, resetZoom],
   );
 
-  const handleSortModeChange = useCallback(
-    (mode: 'alphabetical' | 'degree' | 'auto') => {
-      setTreeSortMode(mode);
-    },
-    [setTreeSortMode],
-  );
-
   // Expose focusNode to parent via ref
   useImperativeHandle(
     ref,
@@ -202,7 +193,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     let sigmaGraph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>;
 
     if (graphViewMode === 'tree') {
-      sigmaGraph = knowledgeGraphToTreeGraphology(graph, treeSortMode);
+      sigmaGraph = knowledgeGraphToTreeGraphology(graph);
     } else {
       // Build community memberships map from MEMBER_OF relationships
       const communityMemberships = new Map<string, number>();
@@ -220,7 +211,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     }
 
     setSigmaGraph(sigmaGraph);
-  }, [graph, nodeById, setSigmaGraph, graphViewMode, treeSortMode]);
+  }, [graph, nodeById, setSigmaGraph, graphViewMode]);
 
   // Update node visibility when filters change
   useEffect(() => {
@@ -298,42 +289,6 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
           Tree View
         </button>
       </div>
-
-      {/* Tree Sort Toggle */}
-      {graphViewMode === 'tree' && (
-        <div className="absolute top-14 left-1/2 z-20 flex -translate-x-1/2 gap-1 rounded-lg border border-border-subtle bg-elevated/90 p-1 backdrop-blur-sm">
-          <button
-            onClick={() => handleSortModeChange('alphabetical')}
-            className={`rounded-md px-2.5 py-1 text-xs transition-all ${
-              treeSortMode === 'alphabetical'
-                ? 'bg-accent/20 text-accent'
-                : 'text-text-secondary hover:bg-hover'
-            }`}
-          >
-            Alphabetical
-          </button>
-          <button
-            onClick={() => handleSortModeChange('degree')}
-            className={`rounded-md px-2.5 py-1 text-xs transition-all ${
-              treeSortMode === 'degree'
-                ? 'bg-accent/20 text-accent'
-                : 'text-text-secondary hover:bg-hover'
-            }`}
-          >
-            By Calls
-          </button>
-          <button
-            onClick={() => handleSortModeChange('auto')}
-            className={`rounded-md px-2.5 py-1 text-xs transition-all ${
-              treeSortMode === 'auto'
-                ? 'bg-accent/20 text-accent'
-                : 'text-text-secondary hover:bg-hover'
-            }`}
-          >
-            Auto
-          </button>
-        </div>
-      )}
 
       {/* Sigma container */}
       <div

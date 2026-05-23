@@ -24,6 +24,9 @@ const TYPE_TO_LAYER: Record<string, number> = {
   // Layer 1: Files
   File: 1,
   Section: 1,
+  Import: 1,
+  Route: 1,
+  Tool: 1,
 
   // Layer 2: Type definitions
   Class: 2,
@@ -36,6 +39,7 @@ const TYPE_TO_LAYER: Record<string, number> = {
   Record: 2,
   Typedef: 2,
   Template: 2,
+  TypeAlias: 2,
 
   // Layer 3: Functions / Methods
   Function: 3,
@@ -43,6 +47,14 @@ const TYPE_TO_LAYER: Record<string, number> = {
   Impl: 3,
   Delegate: 3,
   Constructor: 3,
+  Variable: 3,
+  Const: 3,
+  Static: 3,
+  Property: 3,
+  Decorator: 3,
+  Annotation: 3,
+  Macro: 3,
+  CodeElement: 3,
 };
 
 /** Fallback layer for unmapped types. */
@@ -56,28 +68,12 @@ const LAYER_HEIGHT = CANVAS_HEIGHT / LAYER_COUNT; // 200
 const PADDING_X = 60;
 const PADDING_Y = 15;
 const MIN_NODE_GAP = 45;
+const HIERARCHY_RELATIONS = new Set(['CONTAINS', 'DEFINES']);
 
 function calculateNodeSize(layer: number, nodeType: NodeLabel): number {
   const baseSize = NODE_SIZES[nodeType] || 6;
   const layerMultiplier = Math.max(0.6, 1 - layer * 0.12);
   return baseSize * layerMultiplier;
-}
-
-function calculateDegrees(graph: KnowledgeGraph): Map<string, number> {
-  const degrees = new Map<string, number>();
-
-  for (const node of graph.nodes) {
-    degrees.set(node.id, 0);
-  }
-
-  for (const rel of graph.relationships) {
-    if (rel.type === 'CALLS') {
-      degrees.set(rel.sourceId, (degrees.get(rel.sourceId) || 0) + 1);
-      degrees.set(rel.targetId, (degrees.get(rel.targetId) || 0) + 1);
-    }
-  }
-
-  return degrees;
 }
 
 function deterministicHash(str: string): number {
@@ -110,29 +106,36 @@ function calculateGrid(nodeCount: number, availableWidth: number, availableHeigh
   return { cols, rows, gapX, gapY };
 }
 
-interface LayoutNode {
-  id: string;
-  x: number;
-  y: number;
-  layer: number;
-  size: number;
-  degree: number;
-  label: NodeLabel;
-}
-
 function getNodeLayer(node: GraphNode): number {
   return TYPE_TO_LAYER[node.label] ?? DEFAULT_LAYER;
 }
 
+function buildHierarchyMaps(graph: KnowledgeGraph) {
+  const childrenByParent = new Map<string, string[]>();
+  const parentsByChild = new Map<string, string[]>();
+
+  for (const rel of graph.relationships) {
+    if (!HIERARCHY_RELATIONS.has(rel.type)) continue;
+
+    if (!childrenByParent.has(rel.sourceId)) {
+      childrenByParent.set(rel.sourceId, []);
+    }
+    childrenByParent.get(rel.sourceId)!.push(rel.targetId);
+
+    if (!parentsByChild.has(rel.targetId)) {
+      parentsByChild.set(rel.targetId, []);
+    }
+    parentsByChild.get(rel.targetId)!.push(rel.sourceId);
+  }
+
+  return { childrenByParent, parentsByChild };
+}
+
 /**
- * Initialize positions using grid layout (used by alphabetical/degree and as auto seed).
+ * Initialize positions using type-layered grid layout.
  */
-function initGridPositions(
-  graph: KnowledgeGraph,
-  sortMode: 'alphabetical' | 'degree',
-): Map<string, TreeNodePosition> {
+function initGridPositions(graph: KnowledgeGraph): Map<string, TreeNodePosition> {
   const positions = new Map<string, TreeNodePosition>();
-  const degrees = calculateDegrees(graph);
 
   const nodesByLayer: GraphNode[][] = [[], [], [], []];
   for (const node of graph.nodes) {
@@ -144,12 +147,6 @@ function initGridPositions(
 
   for (let layer = 0; layer < LAYER_COUNT; layer++) {
     nodesByLayer[layer].sort((a, b) => {
-      if (sortMode === 'alphabetical') {
-        return a.properties.name.localeCompare(b.properties.name);
-      }
-      const degA = degrees.get(a.id) || 0;
-      const degB = degrees.get(b.id) || 0;
-      if (degA !== degB) return degB - degA;
       return a.properties.name.localeCompare(b.properties.name);
     });
   }
@@ -163,7 +160,8 @@ function initGridPositions(
 
     const { cols, rows, gapX, gapY } = calculateGrid(nodes.length, availableWidth, availableHeight);
 
-    const layerBaseY = layer * LAYER_HEIGHT + PADDING_Y;
+    const visualLayer = LAYER_COUNT - 1 - layer;
+    const layerBaseY = visualLayer * LAYER_HEIGHT + PADDING_Y;
     const layerActualHeight = rows * gapY;
     const verticalOffset = (availableHeight - layerActualHeight) / 2;
 
@@ -191,12 +189,13 @@ function initGridPositions(
 }
 
 /**
- * Auto layout: grid-based with organic jitter and edge-aware clustering.
- * Keeps the full width of the grid layout while adding organic feel.
+ * Tree view layout: type-layered grid with organic jitter and
+ * structure-aware horizontal branch shaping.
  */
-export function calculateAutoLayout(graph: KnowledgeGraph): Map<string, TreeNodePosition> {
+export function calculateTreeLayout(graph: KnowledgeGraph): Map<string, TreeNodePosition> {
   // 1. Start with grid layout (provides good X distribution)
-  const positions = initGridPositions(graph, 'alphabetical');
+  const positions = initGridPositions(graph);
+  const { childrenByParent, parentsByChild } = buildHierarchyMaps(graph);
 
   // 2. Add organic jitter to avoid rigid grid appearance
   for (const [nodeId, pos] of positions) {
@@ -206,7 +205,71 @@ export function calculateAutoLayout(graph: KnowledgeGraph): Map<string, TreeNode
     pos.y += jitterY;
   }
 
-  // 3. Build adjacency list for connected nodes (non-hierarchy only)
+  // 3. Use structural edges to create a tree-like horizontal ordering while
+  // preserving the type-based vertical layers.
+  const STRUCTURE_ITERATIONS = 6;
+  for (let iter = 0; iter < STRUCTURE_ITERATIONS; iter++) {
+    const childTargets = new Map<string, { sum: number; count: number }>();
+
+    for (const [parentId, children] of childrenByParent) {
+      const parentPos = positions.get(parentId);
+      if (!parentPos || children.length === 0) continue;
+
+      const childPositions = children
+        .map((childId) => ({ childId, pos: positions.get(childId) }))
+        .filter(
+          (entry): entry is { childId: string; pos: TreeNodePosition } => entry.pos !== undefined,
+        )
+        .sort((a, b) => a.pos.x - b.pos.x);
+
+      if (childPositions.length === 0) continue;
+
+      const currentCenter =
+        childPositions.reduce((sum, entry) => sum + entry.pos.x, 0) / childPositions.length;
+      const shift = parentPos.x - currentCenter;
+
+      for (const entry of childPositions) {
+        const existing = childTargets.get(entry.childId) || { sum: 0, count: 0 };
+        existing.sum += entry.pos.x + shift;
+        existing.count += 1;
+        childTargets.set(entry.childId, existing);
+      }
+    }
+
+    for (const [nodeId, target] of childTargets) {
+      const pos = positions.get(nodeId);
+      if (!pos) continue;
+      const avgTargetX = target.sum / target.count;
+      pos.x = pos.x * 0.45 + avgTargetX * 0.55;
+    }
+
+    const parentTargets = new Map<string, { sum: number; count: number }>();
+    for (const [parentId, children] of childrenByParent) {
+      const parentPos = positions.get(parentId);
+      if (!parentPos || children.length === 0) continue;
+
+      const childXs = children
+        .map((childId) => positions.get(childId)?.x)
+        .filter((value): value is number => value !== undefined);
+
+      if (childXs.length === 0) continue;
+
+      const avgChildX = childXs.reduce((sum, value) => sum + value, 0) / childXs.length;
+      const existing = parentTargets.get(parentId) || { sum: 0, count: 0 };
+      existing.sum += avgChildX;
+      existing.count += 1;
+      parentTargets.set(parentId, existing);
+    }
+
+    for (const [nodeId, target] of parentTargets) {
+      const pos = positions.get(nodeId);
+      if (!pos) continue;
+      const avgTargetX = target.sum / target.count;
+      pos.x = pos.x * 0.65 + avgTargetX * 0.35;
+    }
+  }
+
+  // 4. Build adjacency list for connected nodes (non-hierarchy only)
   const adjacencies = new Map<string, string[]>();
   for (const node of graph.nodes) {
     adjacencies.set(node.id, []);
@@ -220,7 +283,7 @@ export function calculateAutoLayout(graph: KnowledgeGraph): Map<string, TreeNode
     }
   }
 
-  // 4. Pull connected nodes closer in X direction (only within same or adjacent layers)
+  // 5. Pull connected nodes closer in X direction (only within same or adjacent layers)
   // This creates clusters without collapsing the overall width
   const ITERATIONS = 8;
   for (let iter = 0; iter < ITERATIONS; iter++) {
@@ -248,14 +311,31 @@ export function calculateAutoLayout(graph: KnowledgeGraph): Map<string, TreeNode
     }
   }
 
-  // 5. Apply repulsion to prevent overlap (lightweight, only when needed)
+  // 6. Pull childless nodes slightly toward their hierarchy parents when the
+  // graph has enough structure information to form branches.
+  for (const [nodeId, parents] of parentsByChild) {
+    if (childrenByParent.has(nodeId)) continue;
+    const pos = positions.get(nodeId);
+    if (!pos || parents.length === 0) continue;
+
+    const parentXs = parents
+      .map((parentId) => positions.get(parentId)?.x)
+      .filter((value): value is number => value !== undefined);
+
+    if (parentXs.length === 0) continue;
+
+    const avgParentX = parentXs.reduce((sum, value) => sum + value, 0) / parentXs.length;
+    pos.x = pos.x * 0.7 + avgParentX * 0.3;
+  }
+
+  // 7. Apply repulsion to prevent overlap (lightweight, only when needed)
   for (const [idA, posA] of positions) {
     for (const [idB, posB] of positions) {
       if (idA >= idB) continue;
       if (posA.depth !== posB.depth) continue; // Only within same layer
 
       const dx = posB.x - posA.x;
-      const dy = posB.y - posB.y;
+      const dy = posB.y - posA.y;
       const dist = Math.sqrt(dx * dx + dy * dy) || 1;
       const minDist = (posA.size + posB.size) * 2.2;
 
@@ -272,16 +352,21 @@ export function calculateAutoLayout(graph: KnowledgeGraph): Map<string, TreeNode
     }
   }
 
-  return positions;
-}
+  // 8. Recenter and softly clamp X so the layout keeps its breadth without
+  // drifting too far off-canvas.
+  const xValues = Array.from(positions.values()).map((pos) => pos.x);
+  if (xValues.length > 0) {
+    const minX = Math.min(...xValues);
+    const maxX = Math.max(...xValues);
+    const centerX = (minX + maxX) / 2;
+    const maxAllowed = (CANVAS_WIDTH - PADDING_X * 2) / 2;
+    const halfSpan = Math.max(1, (maxX - minX) / 2);
+    const scale = halfSpan > maxAllowed ? maxAllowed / halfSpan : 1;
 
-export function calculateTreeLayout(
-  graph: KnowledgeGraph,
-  sortMode: 'alphabetical' | 'degree' | 'auto',
-): Map<string, TreeNodePosition> {
-  if (sortMode === 'auto') {
-    return calculateAutoLayout(graph);
+    for (const pos of positions.values()) {
+      pos.x = (pos.x - centerX) * scale;
+    }
   }
 
-  return initGridPositions(graph, sortMode);
+  return positions;
 }

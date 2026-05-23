@@ -321,11 +321,10 @@ export const knowledgeGraphToGraphology = (
 
 export const knowledgeGraphToTreeGraphology = (
   knowledgeGraph: KnowledgeGraph,
-  sortMode: 'alphabetical' | 'degree' | 'auto' = 'auto',
 ): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> => {
   const graph = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>();
   const nodeCount = knowledgeGraph.nodes.length;
-  const positions = calculateTreeLayout(knowledgeGraph, sortMode);
+  const positions = calculateTreeLayout(knowledgeGraph);
 
   // Add nodes with tree positions
   for (const node of knowledgeGraph.nodes) {

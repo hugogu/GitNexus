@@ -26,7 +26,7 @@ describe('knowledgeGraphToTreeGraphology', () => {
       ],
     };
 
-    const sigmaGraph = knowledgeGraphToTreeGraphology(graph, 'alphabetical');
+    const sigmaGraph = knowledgeGraphToTreeGraphology(graph);
 
     expect(sigmaGraph.hasNode('root')).toBe(true);
     expect(sigmaGraph.hasNode('folder')).toBe(true);
@@ -36,10 +36,9 @@ describe('knowledgeGraphToTreeGraphology', () => {
     const folderAttrs = sigmaGraph.getNodeAttributes('folder');
     const fileAttrs = sigmaGraph.getNodeAttributes('file');
 
-    // In type-layer layout, Y coordinates group nodes by type layer:
-    // Layer 0 (Project/Folder) < Layer 1 (File)
-    expect(rootAttrs.y).toBeLessThan(fileAttrs.y);
-    expect(folderAttrs.y).toBeLessThan(fileAttrs.y);
+    // Tree view is inverted vertically, so files sit above containers.
+    expect(fileAttrs.y).toBeLessThan(rootAttrs.y);
+    expect(fileAttrs.y).toBeLessThan(folderAttrs.y);
 
     // Nodes should have reasonable sizes
     expect(rootAttrs.size).toBeGreaterThan(2);
@@ -56,7 +55,7 @@ describe('knowledgeGraphToTreeGraphology', () => {
       ],
     };
 
-    const sigmaGraph = knowledgeGraphToTreeGraphology(graph, 'alphabetical');
+    const sigmaGraph = knowledgeGraphToTreeGraphology(graph);
 
     // Find edges and check their attributes
     sigmaGraph.forEachEdge((edge, attrs) => {
@@ -74,7 +73,7 @@ describe('knowledgeGraphToTreeGraphology', () => {
       relationships: [{ id: 'r1', type: 'IMPORTS', sourceId: 'a', targetId: 'b' }],
     };
 
-    const sigmaGraph = knowledgeGraphToTreeGraphology(graph, 'alphabetical');
+    const sigmaGraph = knowledgeGraphToTreeGraphology(graph);
 
     sigmaGraph.forEachEdge((edge, attrs) => {
       if (attrs.relationType === 'IMPORTS') {

@@ -23,17 +23,18 @@ describe('calculateTreeLayout', () => {
       relationships: [],
     };
 
-    const positions = calculateTreeLayout(graph, 'alphabetical');
+    const positions = calculateTreeLayout(graph);
 
     const folderY = positions.get('f1')!.y;
     const fileY = positions.get('file1')!.y;
     const classY = positions.get('cls1')!.y;
     const funcY = positions.get('fn1')!.y;
 
-    // Layer ordering: Folder < File < Class < Function
-    expect(folderY).toBeLessThan(fileY);
-    expect(fileY).toBeLessThan(classY);
-    expect(classY).toBeLessThan(funcY);
+    // Layer ordering is visually inverted in tree view:
+    // Function < Class < File < Folder
+    expect(funcY).toBeLessThan(classY);
+    expect(classY).toBeLessThan(fileY);
+    expect(fileY).toBeLessThan(folderY);
   });
 
   it('should arrange many same-type nodes in a grid within a layer', () => {
@@ -43,7 +44,7 @@ describe('calculateTreeLayout', () => {
     }
 
     const graph: KnowledgeGraph = { nodes, relationships: [] };
-    const positions = calculateTreeLayout(graph, 'alphabetical');
+    const positions = calculateTreeLayout(graph);
 
     const xValues = nodes.map((n) => positions.get(n.id)!.x);
     const yValues = nodes.map((n) => positions.get(n.id)!.y);
@@ -78,7 +79,7 @@ describe('calculateTreeLayout', () => {
       relationships: [],
     };
 
-    const positions = calculateTreeLayout(graph, 'alphabetical');
+    const positions = calculateTreeLayout(graph);
 
     // In grid layout, 'a' should appear before 'm' and 'z' in reading order
     // (left-to-right, top-to-bottom)
@@ -107,18 +108,18 @@ describe('calculateTreeLayout', () => {
       relationships: [],
     };
 
-    const positions = calculateTreeLayout(graph, 'alphabetical');
+    const positions = calculateTreeLayout(graph);
 
-    // Folder (layer 0) should be highest (smallest Y)
-    expect(positions.get('folder')!.y).toBeLessThan(positions.get('file')!.y);
+    // Folder now appears below files/types/methods in the inverted tree view
+    expect(positions.get('file')!.y).toBeLessThan(positions.get('folder')!.y);
 
-    // File (layer 1) should be above Class/Interface/Enum (layer 2)
-    expect(positions.get('file')!.y).toBeLessThan(positions.get('iface')!.y);
-    expect(positions.get('file')!.y).toBeLessThan(positions.get('enum')!.y);
+    // File (layer 1) should be below Class/Interface/Enum (layer 2)
+    expect(positions.get('iface')!.y).toBeLessThan(positions.get('file')!.y);
+    expect(positions.get('enum')!.y).toBeLessThan(positions.get('file')!.y);
 
-    // Interface/Enum (layer 2) should be above Method (layer 3)
-    expect(positions.get('iface')!.y).toBeLessThan(positions.get('method')!.y);
-    expect(positions.get('enum')!.y).toBeLessThan(positions.get('method')!.y);
+    // Interface/Enum (layer 2) should be below Method (layer 3)
+    expect(positions.get('method')!.y).toBeLessThan(positions.get('iface')!.y);
+    expect(positions.get('method')!.y).toBeLessThan(positions.get('enum')!.y);
   });
 
   it('should keep node sizes reasonable', () => {
@@ -131,11 +132,43 @@ describe('calculateTreeLayout', () => {
       relationships: [],
     };
 
-    const positions = calculateTreeLayout(graph, 'alphabetical');
+    const positions = calculateTreeLayout(graph);
 
     for (const id of ['folder', 'file', 'fn']) {
       expect(positions.get(id)!.size).toBeGreaterThan(2);
       expect(positions.get(id)!.size).toBeLessThan(25);
     }
+  });
+
+  it('should spread sibling branches under their structural parent in auto mode', () => {
+    const graph: KnowledgeGraph = {
+      nodes: [
+        makeNode('folder', 'Folder', 'apps'),
+        makeNode('fileA', 'File', 'a.ts'),
+        makeNode('fileB', 'File', 'b.ts'),
+        makeNode('fileC', 'File', 'c.ts'),
+        makeNode('fnA', 'Function', 'fnA'),
+        makeNode('fnB', 'Function', 'fnB'),
+        makeNode('fnC', 'Function', 'fnC'),
+      ],
+      relationships: [
+        { id: 'r1', type: 'CONTAINS', sourceId: 'folder', targetId: 'fileA' },
+        { id: 'r2', type: 'CONTAINS', sourceId: 'folder', targetId: 'fileB' },
+        { id: 'r3', type: 'CONTAINS', sourceId: 'folder', targetId: 'fileC' },
+        { id: 'r4', type: 'DEFINES', sourceId: 'fileA', targetId: 'fnA' },
+        { id: 'r5', type: 'DEFINES', sourceId: 'fileB', targetId: 'fnB' },
+        { id: 'r6', type: 'DEFINES', sourceId: 'fileC', targetId: 'fnC' },
+      ],
+    };
+
+    const positions = calculateTreeLayout(graph);
+    const fileXs = ['fileA', 'fileB', 'fileC'].map((id) => positions.get(id)!.x);
+    const fnXs = ['fnA', 'fnB', 'fnC'].map((id) => positions.get(id)!.x);
+
+    expect(Math.max(...fileXs) - Math.min(...fileXs)).toBeGreaterThan(120);
+    expect(Math.max(...fnXs) - Math.min(...fnXs)).toBeGreaterThan(120);
+    expect(Math.abs(positions.get('fileA')!.x - positions.get('fnA')!.x)).toBeLessThan(120);
+    expect(Math.abs(positions.get('fileB')!.x - positions.get('fnB')!.x)).toBeLessThan(120);
+    expect(Math.abs(positions.get('fileC')!.x - positions.get('fnC')!.x)).toBeLessThan(120);
   });
 });
