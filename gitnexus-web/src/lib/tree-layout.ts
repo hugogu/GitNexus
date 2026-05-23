@@ -48,17 +48,14 @@ const TYPE_TO_LAYER: Record<string, number> = {
 /** Fallback layer for unmapped types. */
 const DEFAULT_LAYER = 1;
 
-/** Base Y coordinate for each layer. */
-const LAYER_Y_BASE = [0, 220, 440, 660];
-
-/** Max vertical jitter within a layer. */
-const LAYER_JITTER = 80;
-
-/** Minimum horizontal spacing between nodes. */
-const MIN_NODE_SPACING = 70;
-
-/** Target width for the widest layer. */
-const TARGET_LAYER_WIDTH = 2800;
+/** Virtual canvas size for layout calculation. */
+const CANVAS_WIDTH = 1200;
+const CANVAS_HEIGHT = 800;
+const LAYER_COUNT = 4;
+const LAYER_HEIGHT = CANVAS_HEIGHT / LAYER_COUNT; // 200
+const PADDING_X = 60;
+const PADDING_Y = 15;
+const MIN_NODE_GAP = 45;
 
 function calculateNodeSize(layer: number, nodeType: NodeLabel): number {
   const baseSize = NODE_SIZES[nodeType] || 6;
@@ -92,6 +89,27 @@ function deterministicHash(str: string): number {
   return (Math.abs(hash) % 10000) / 10000;
 }
 
+/**
+ * Calculate grid dimensions (cols × rows) for a layer.
+ * Aims for a balanced aspect ratio within the available space.
+ */
+function calculateGrid(nodeCount: number, availableWidth: number, availableHeight: number) {
+  if (nodeCount <= 0) return { cols: 0, rows: 0, gapX: 0, gapY: 0 };
+
+  const maxCols = Math.max(1, Math.floor(availableWidth / MIN_NODE_GAP));
+
+  // Target: grid aspect ratio close to availableWidth / availableHeight
+  const targetCols = Math.sqrt(nodeCount * (availableWidth / availableHeight));
+  const cols = Math.min(maxCols, Math.max(1, Math.round(targetCols)));
+  const rows = Math.ceil(nodeCount / cols);
+
+  // Evenly distribute nodes within available space
+  const gapX = availableWidth / cols;
+  const gapY = availableHeight / rows;
+
+  return { cols, rows, gapX, gapY };
+}
+
 export function calculateTreeLayout(
   graph: KnowledgeGraph,
   sortMode: 'alphabetical' | 'degree',
@@ -104,13 +122,13 @@ export function calculateTreeLayout(
 
   for (const node of graph.nodes) {
     const layer = TYPE_TO_LAYER[node.label] ?? DEFAULT_LAYER;
-    if (layer >= 0 && layer < 4) {
+    if (layer >= 0 && layer < LAYER_COUNT) {
       nodesByLayer[layer].push(node);
     }
   }
 
   // 2. Sort each layer
-  for (let layer = 0; layer < 4; layer++) {
+  for (let layer = 0; layer < LAYER_COUNT; layer++) {
     nodesByLayer[layer].sort((a, b) => {
       if (sortMode === 'alphabetical') {
         return a.properties.name.localeCompare(b.properties.name);
@@ -122,30 +140,42 @@ export function calculateTreeLayout(
     });
   }
 
-  // 3. Calculate layer width based on node count
-  const maxNodes = Math.max(1, ...nodesByLayer.map((l) => l.length));
-  const layerWidth = Math.max(maxNodes * MIN_NODE_SPACING, TARGET_LAYER_WIDTH);
+  // 3. Position nodes in a grid within each layer
+  const availableWidth = CANVAS_WIDTH - PADDING_X * 2;
+  const availableHeight = LAYER_HEIGHT - PADDING_Y * 2;
 
-  // 4. Position nodes
-  for (let layer = 0; layer < 4; layer++) {
+  for (let layer = 0; layer < LAYER_COUNT; layer++) {
     const nodes = nodesByLayer[layer];
     if (nodes.length === 0) continue;
 
-    const spacing = layerWidth / (nodes.length + 1);
+    const { cols, rows, gapX, gapY } = calculateGrid(nodes.length, availableWidth, availableHeight);
+
+    const layerBaseY = layer * LAYER_HEIGHT + PADDING_Y;
+    const layerActualHeight = rows * gapY;
+    const verticalOffset = (availableHeight - layerActualHeight) / 2;
 
     for (let i = 0; i < nodes.length; i++) {
       const node = nodes[i];
-      const hash = deterministicHash(node.id);
+      const row = Math.floor(i / cols);
+      const col = i % cols;
 
-      // X: evenly distributed across the layer width
-      const x = -layerWidth / 2 + (i + 1) * spacing;
+      // X: centered
+      const x = -availableWidth / 2 + (col + 0.5) * gapX;
 
-      // Y: base layer Y + deterministic jitter
-      const y = LAYER_Y_BASE[layer] + (hash - 0.5) * LAYER_JITTER;
+      // Y: within layer, vertically centered
+      const y = layerBaseY + verticalOffset + (row + 0.5) * gapY;
 
       const size = calculateNodeSize(layer, node.label);
 
       positions.set(node.id, { x, y, size, depth: layer });
+    }
+  }
+
+  // 4. Center entire layout vertically
+  if (positions.size > 0) {
+    const centerY = CANVAS_HEIGHT / 2;
+    for (const pos of positions.values()) {
+      pos.y -= centerY;
     }
   }
 

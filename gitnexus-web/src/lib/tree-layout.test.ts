@@ -12,7 +12,7 @@ function makeNode(id: string, label: string, name: string): GraphNode {
 }
 
 describe('calculateTreeLayout', () => {
-  it('should place folders in layer 0, files in layer 1, classes in layer 2, functions in layer 3', () => {
+  it('should place different types in correct layers', () => {
     const graph: KnowledgeGraph = {
       nodes: [
         makeNode('f1', 'Folder', 'src'),
@@ -36,42 +36,36 @@ describe('calculateTreeLayout', () => {
     expect(classY).toBeLessThan(funcY);
   });
 
-  it('should spread nodes horizontally within each layer', () => {
-    const graph: KnowledgeGraph = {
-      nodes: [
-        makeNode('a', 'Function', 'fnA'),
-        makeNode('b', 'Function', 'fnB'),
-        makeNode('c', 'Function', 'fnC'),
-        makeNode('d', 'Function', 'fnD'),
-      ],
-      relationships: [],
-    };
+  it('should arrange many same-type nodes in a grid within a layer', () => {
+    const nodes: GraphNode[] = [];
+    for (let i = 0; i < 40; i++) {
+      nodes.push(makeNode(`fn${i}`, 'Function', `func${i}`));
+    }
 
+    const graph: KnowledgeGraph = { nodes, relationships: [] };
     const positions = calculateTreeLayout(graph, 'alphabetical');
 
-    const xValues = [
-      positions.get('a')!.x,
-      positions.get('b')!.x,
-      positions.get('c')!.x,
-      positions.get('d')!.x,
-    ];
+    const xValues = nodes.map((n) => positions.get(n.id)!.x);
+    const yValues = nodes.map((n) => positions.get(n.id)!.y);
 
-    // Nodes should be spread out horizontally, not stacked vertically
+    // Should have multiple columns (spread horizontally)
+    const uniqueX = [...new Set(xValues)].sort((a, b) => a - b);
+    expect(uniqueX.length).toBeGreaterThan(3);
+
+    // Should have multiple rows (spread vertically within layer)
+    const uniqueY = [...new Set(yValues)].sort((a, b) => a - b);
+    expect(uniqueY.length).toBeGreaterThan(1);
+
+    // Overall width should be significant
     const minX = Math.min(...xValues);
     const maxX = Math.max(...xValues);
     expect(maxX - minX).toBeGreaterThan(500);
 
-    // All should be in the same layer (Function = layer 3)
-    const yValues = [
-      positions.get('a')!.y,
-      positions.get('b')!.y,
-      positions.get('c')!.y,
-      positions.get('d')!.y,
-    ];
+    // Height spread within layer should be moderate (not a single line)
     const minY = Math.min(...yValues);
     const maxY = Math.max(...yValues);
-    // Y variation should be small (same layer)
-    expect(maxY - minY).toBeLessThan(200);
+    expect(maxY - minY).toBeGreaterThan(50);
+    expect(maxY - minY).toBeLessThan(250); // But not too tall
   });
 
   it('should sort nodes alphabetically within layers', () => {
@@ -86,34 +80,19 @@ describe('calculateTreeLayout', () => {
 
     const positions = calculateTreeLayout(graph, 'alphabetical');
 
-    const aX = positions.get('a')!.x;
-    const mX = positions.get('m')!.x;
-    const zX = positions.get('z')!.x;
+    // In grid layout, 'a' should appear before 'm' and 'z' in reading order
+    // (left-to-right, top-to-bottom)
+    const aPos = positions.get('a')!;
+    const mPos = positions.get('m')!;
+    const zPos = positions.get('z')!;
 
-    expect(aX).toBeLessThan(mX);
-    expect(mX).toBeLessThan(zX);
-  });
+    // Reading order: a comes before m, which comes before z
+    const aIndex = aPos.y * 10000 + aPos.x;
+    const mIndex = mPos.y * 10000 + mPos.x;
+    const zIndex = zPos.y * 10000 + zPos.x;
 
-  it('should make node sizes decrease with layer depth for same type', () => {
-    const graph: KnowledgeGraph = {
-      nodes: [
-        makeNode('fn1', 'Function', 'func1'),
-        makeNode('fn2', 'Function', 'func2'),
-        makeNode('fn3', 'Function', 'func3'),
-        makeNode('fn4', 'Function', 'func4'),
-      ],
-      relationships: [],
-    };
-
-    // Manually place functions in different layers by editing positions
-    // This tests the size calculation directly
-    const positions = calculateTreeLayout(graph, 'alphabetical');
-
-    // All are Functions (layer 3 by default), so sizes should be similar
-    // Just verify sizes are reasonable (not too small)
-    for (const id of ['fn1', 'fn2', 'fn3', 'fn4']) {
-      expect(positions.get(id)!.size).toBeGreaterThan(2);
-    }
+    expect(aIndex).toBeLessThan(mIndex);
+    expect(mIndex).toBeLessThan(zIndex);
   });
 
   it('should place multiple node types in correct layers', () => {
@@ -140,5 +119,23 @@ describe('calculateTreeLayout', () => {
     // Interface/Enum (layer 2) should be above Method (layer 3)
     expect(positions.get('iface')!.y).toBeLessThan(positions.get('method')!.y);
     expect(positions.get('enum')!.y).toBeLessThan(positions.get('method')!.y);
+  });
+
+  it('should keep node sizes reasonable', () => {
+    const graph: KnowledgeGraph = {
+      nodes: [
+        makeNode('folder', 'Folder', 'src'),
+        makeNode('file', 'File', 'main.ts'),
+        makeNode('fn', 'Function', 'myFunc'),
+      ],
+      relationships: [],
+    };
+
+    const positions = calculateTreeLayout(graph, 'alphabetical');
+
+    for (const id of ['folder', 'file', 'fn']) {
+      expect(positions.get(id)!.size).toBeGreaterThan(2);
+      expect(positions.get(id)!.size).toBeLessThan(25);
+    }
   });
 });
