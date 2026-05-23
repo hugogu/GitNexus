@@ -18,6 +18,9 @@ export interface SigmaNodeAttributes {
   zIndex?: number;
   highlighted?: boolean;
   mass?: number; // ForceAtlas2 mass - higher = more repulsion
+  treeAnchorX?: number;
+  treeAnchorY?: number;
+  treeLayer?: number;
   community?: number; // Community index from Leiden algorithm
   communityColor?: string; // Color assigned by community
 }
@@ -347,6 +350,9 @@ export const knowledgeGraphToTreeGraphology = (
       endLine: node.properties.endLine,
       hidden: false,
       mass: 1, // No force layout in tree view
+      treeAnchorX: pos.x,
+      treeAnchorY: pos.y,
+      treeLayer: pos.depth,
     });
   }
 

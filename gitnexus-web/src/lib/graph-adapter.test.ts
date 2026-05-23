@@ -45,6 +45,11 @@ describe('knowledgeGraphToTreeGraphology', () => {
     expect(rootAttrs.size).toBeGreaterThan(2);
     expect(folderAttrs.size).toBeGreaterThan(2);
     expect(fileAttrs.size).toBeGreaterThan(2);
+
+    expect(rootAttrs.treeAnchorX).toBe(rootAttrs.x);
+    expect(rootAttrs.treeAnchorY).toBe(rootAttrs.y);
+    expect(rootAttrs.treeLayer).toBe(0);
+    expect(fileAttrs.treeLayer).toBe(1);
   });
 
   it('should style hierarchy edges differently from cross-cutting edges', () => {

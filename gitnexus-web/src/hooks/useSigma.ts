@@ -129,6 +129,28 @@ const getLayoutDuration = (nodeCount: number): number => {
   return 20000; // 20s for small graphs
 };
 
+const TREE_MAX_X = 540;
+const TREE_REPULSION_RANGE = 120;
+const TREE_LAYOUT_MAX_DURATION = 18000;
+const TREE_LAYOUT_STABILITY_FRAMES = 24;
+const TREE_TARGET_FRAME_MS = 32;
+const TREE_LAYOUT_MIN_DURATION = 1500;
+const TREE_FORCE_DEADZONE = 0.005;
+const TREE_VELOCITY_DEADZONE = 0.01;
+
+const TREE_EDGE_WEIGHTS: Record<string, number> = {
+  CONTAINS: 0.09,
+  DEFINES: 0.12,
+  IMPORTS: 0.14,
+  CALLS: 0.18,
+  EXTENDS: 0.13,
+  IMPLEMENTS: 0.13,
+};
+
+const clamp = (value: number, min: number, max: number): number => {
+  return Math.min(max, Math.max(min, value));
+};
+
 export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const containerRef = useRef<HTMLDivElement>(null);
   const sigmaRef = useRef<Sigma | null>(null);
@@ -140,7 +162,13 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const animatedNodesRef = useRef<Map<string, NodeAnimation>>(new Map());
   const visibleEdgeTypesRef = useRef<EdgeType[] | null>(null);
   const layoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const animationFrameRef = useRef<number | null>(null);
+  const effectsAnimationFrameRef = useRef<number | null>(null);
+  const treeLayoutFrameRef = useRef<number | null>(null);
+  const treeVelocityRef = useRef<Map<string, number>>(new Map());
+  const treeLastTickRef = useRef<number | null>(null);
+  const treeAccumulatorRef = useRef(0);
+  const treeLayoutStartRef = useRef<number | null>(null);
+  const treeStableFramesRef = useRef(0);
   const [isLayoutRunning, setIsLayoutRunning] = useState(false);
   const [selectedNode, setSelectedNodeState] = useState<string | null>(null);
 
@@ -160,24 +188,24 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   // Animation loop for node effects
   useEffect(() => {
     if (!options.animatedNodes || options.animatedNodes.size === 0) {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
+      if (effectsAnimationFrameRef.current) {
+        cancelAnimationFrame(effectsAnimationFrameRef.current);
+        effectsAnimationFrameRef.current = null;
       }
       return;
     }
 
     const animate = () => {
       sigmaRef.current?.refresh();
-      animationFrameRef.current = requestAnimationFrame(animate);
+      effectsAnimationFrameRef.current = requestAnimationFrame(animate);
     };
 
     animate();
 
     return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
+      if (effectsAnimationFrameRef.current) {
+        cancelAnimationFrame(effectsAnimationFrameRef.current);
+        effectsAnimationFrameRef.current = null;
       }
     };
   }, [options.animatedNodes]);
@@ -197,6 +225,50 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
 
     sigma.refresh();
   }, []);
+
+  const stopTreeLayout = useCallback((refresh: boolean = false) => {
+    if (treeLayoutFrameRef.current) {
+      cancelAnimationFrame(treeLayoutFrameRef.current);
+      treeLayoutFrameRef.current = null;
+    }
+    treeLastTickRef.current = null;
+    treeAccumulatorRef.current = 0;
+    treeLayoutStartRef.current = null;
+    treeStableFramesRef.current = 0;
+    treeVelocityRef.current.clear();
+    setIsLayoutRunning(false);
+
+    if (refresh) {
+      sigmaRef.current?.refresh();
+    }
+  }, []);
+
+  const stopAllLayouts = useCallback(
+    (refresh: boolean = false) => {
+      if (layoutTimeoutRef.current) {
+        clearTimeout(layoutTimeoutRef.current);
+        layoutTimeoutRef.current = null;
+      }
+
+      if (layoutRef.current) {
+        layoutRef.current.stop();
+        layoutRef.current.kill();
+        layoutRef.current = null;
+
+        const graph = graphRef.current;
+        if (graph && options.layoutMode !== 'tree') {
+          noverlap.assign(graph, NOVERLAP_SETTINGS);
+        }
+      }
+
+      stopTreeLayout(false);
+
+      if (refresh) {
+        sigmaRef.current?.refresh();
+      }
+    },
+    [options.layoutMode, stopTreeLayout],
+  );
 
   // Initialize Sigma ONCE
   useEffect(() => {
@@ -505,6 +577,11 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     });
 
     return () => {
+      if (treeLayoutFrameRef.current) {
+        cancelAnimationFrame(treeLayoutFrameRef.current);
+        treeLayoutFrameRef.current = null;
+      }
+      treeVelocityRef.current.clear();
       if (layoutTimeoutRef.current) {
         clearTimeout(layoutTimeoutRef.current);
       }
@@ -515,74 +592,268 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     };
   }, []);
 
-  // Run ForceAtlas2 layout
-  const runLayout = useCallback((graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>) => {
-    const nodeCount = graph.order;
-    if (nodeCount === 0) return;
+  const runTreeLayout = useCallback(
+    (graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>) => {
+      if (graph.order === 0) return;
 
-    // Kill existing
-    if (layoutRef.current) {
-      layoutRef.current.kill();
-      layoutRef.current = null;
-    }
-    if (layoutTimeoutRef.current) {
-      clearTimeout(layoutTimeoutRef.current);
-      layoutTimeoutRef.current = null;
-    }
+      stopAllLayouts(false);
 
-    // Get settings
-    const inferredSettings = forceAtlas2.inferSettings(graph);
-    const customSettings = getFA2Settings(nodeCount);
-    const settings = { ...inferredSettings, ...customSettings };
+      const nodesByLayer = new Map<number, string[]>();
+      graph.forEachNode((nodeId, attrs) => {
+        const layer = attrs.treeLayer ?? 0;
+        const bucket = nodesByLayer.get(layer) ?? [];
+        bucket.push(nodeId);
+        nodesByLayer.set(layer, bucket);
+        treeVelocityRef.current.set(nodeId, 0);
+        graph.setNodeAttribute(nodeId, 'x', attrs.treeAnchorX ?? attrs.x);
+        graph.setNodeAttribute(nodeId, 'y', attrs.treeAnchorY ?? attrs.y);
+      });
 
-    const layout = new FA2Layout(graph, { settings });
+      setIsLayoutRunning(true);
 
-    layoutRef.current = layout;
-    layout.start();
-    setIsLayoutRunning(true);
+      const step = (timestamp: number) => {
+        if (!graphRef.current || graphRef.current !== graph) {
+          stopTreeLayout(false);
+          return;
+        }
 
-    const duration = getLayoutDuration(nodeCount);
+        if (treeLayoutStartRef.current === null) {
+          treeLayoutStartRef.current = timestamp;
+        }
 
-    layoutTimeoutRef.current = setTimeout(() => {
-      if (layoutRef.current) {
-        layoutRef.current.stop();
-        layoutRef.current = null;
+        const frameDelta =
+          treeLastTickRef.current === null
+            ? TREE_TARGET_FRAME_MS
+            : clamp(timestamp - treeLastTickRef.current, 8, 64);
+        treeLastTickRef.current = timestamp;
+        treeAccumulatorRef.current = Math.min(
+          TREE_TARGET_FRAME_MS * 3,
+          treeAccumulatorRef.current + frameDelta,
+        );
 
-        // Light noverlap cleanup
-        noverlap.assign(graph, NOVERLAP_SETTINGS);
+        if (treeAccumulatorRef.current < TREE_TARGET_FRAME_MS) {
+          treeLayoutFrameRef.current = requestAnimationFrame(step);
+          return;
+        }
+
+        const simulationSteps = Math.min(
+          2,
+          Math.floor(treeAccumulatorRef.current / TREE_TARGET_FRAME_MS),
+        );
+        treeAccumulatorRef.current -= simulationSteps * TREE_TARGET_FRAME_MS;
+        const dtScale = 0.6;
+
+        const deltaXByNode = new Map<string, number>();
+        graph.forEachNode((nodeId, attrs) => {
+          const anchorX = attrs.treeAnchorX ?? attrs.x;
+          deltaXByNode.set(nodeId, (anchorX - attrs.x) * 0.008 * dtScale);
+          graph.setNodeAttribute(nodeId, 'y', attrs.treeAnchorY ?? attrs.y);
+        });
+
+        graph.forEachEdge((edge, edgeAttrs, source, target, sourceAttrs, targetAttrs) => {
+          const dx = targetAttrs.x - sourceAttrs.x;
+          const dy =
+            (targetAttrs.treeAnchorY ?? targetAttrs.y) - (sourceAttrs.treeAnchorY ?? sourceAttrs.y);
+          const distance = Math.sqrt(dx * dx + dy * dy) || 1;
+          const layerGap = Math.abs((targetAttrs.treeLayer ?? 0) - (sourceAttrs.treeLayer ?? 0));
+          const restLength =
+            (edgeAttrs.isHierarchyEdge ? 70 : 95) +
+            layerGap * (edgeAttrs.isHierarchyEdge ? 28 : 36);
+          const stretch = distance - restLength;
+
+          if (stretch <= 0) return;
+
+          const weight = TREE_EDGE_WEIGHTS[edgeAttrs.relationType] ?? 0.18;
+          const forceX = (dx / distance) * stretch * weight * 0.02 * dtScale;
+
+          deltaXByNode.set(source, (deltaXByNode.get(source) ?? 0) + forceX);
+          deltaXByNode.set(target, (deltaXByNode.get(target) ?? 0) - forceX);
+        });
+
+        for (const layerNodeIds of nodesByLayer.values()) {
+          const sortedIds = [...layerNodeIds].sort(
+            (a, b) => graph.getNodeAttribute(a, 'x') - graph.getNodeAttribute(b, 'x'),
+          );
+
+          for (let i = 0; i < sortedIds.length; i++) {
+            const nodeA = sortedIds[i];
+            const attrsA = graph.getNodeAttributes(nodeA);
+
+            for (let j = i + 1; j < sortedIds.length; j++) {
+              const nodeB = sortedIds[j];
+              const attrsB = graph.getNodeAttributes(nodeB);
+              const dx = attrsB.x - attrsA.x;
+
+              if (dx > TREE_REPULSION_RANGE) break;
+
+              const distance = Math.max(1, dx);
+              const minGap = Math.max(28, (attrsA.size + attrsB.size) * 1.8);
+              let repulsion = (1 / (distance + 8) - 1 / (TREE_REPULSION_RANGE + 8)) * 180 * dtScale;
+
+              if (distance < minGap) {
+                repulsion += (minGap - distance) * 0.1 * dtScale;
+              }
+
+              if (repulsion <= 0) continue;
+
+              deltaXByNode.set(nodeA, (deltaXByNode.get(nodeA) ?? 0) - repulsion);
+              deltaXByNode.set(nodeB, (deltaXByNode.get(nodeB) ?? 0) + repulsion);
+            }
+          }
+        }
+
+        let totalVelocity = 0;
+        let maxVelocity = 0;
+        let activeNodes = 0;
+        for (let simulationStep = 0; simulationStep < simulationSteps; simulationStep++) {
+          totalVelocity = 0;
+          maxVelocity = 0;
+          activeNodes = 0;
+          graph.forEachNode((nodeId, attrs) => {
+            const forceX = deltaXByNode.get(nodeId) ?? 0;
+            const currentVelocity = treeVelocityRef.current.get(nodeId) ?? 0;
+            const normalizedDistance = Math.min(1, Math.abs(attrs.x) / TREE_MAX_X);
+            const edgeResistance = 1 + normalizedDistance * normalizedDistance * 4;
+            const rawVelocity = (currentVelocity + forceX / edgeResistance) * 0.62;
+            const nextVelocity =
+              Math.abs(forceX) < TREE_FORCE_DEADZONE &&
+              Math.abs(rawVelocity) < TREE_VELOCITY_DEADZONE
+                ? 0
+                : clamp(rawVelocity, -3, 3);
+            const nextX = clamp(attrs.x + nextVelocity, -TREE_MAX_X, TREE_MAX_X);
+
+            treeVelocityRef.current.set(nodeId, nextVelocity);
+            totalVelocity += Math.abs(nextVelocity);
+            maxVelocity = Math.max(maxVelocity, Math.abs(nextVelocity));
+            if (
+              Math.abs(nextVelocity) > TREE_VELOCITY_DEADZONE ||
+              Math.abs(forceX) > TREE_FORCE_DEADZONE
+            ) {
+              activeNodes += 1;
+            }
+            graph.setNodeAttribute(nodeId, 'x', nextX);
+            graph.setNodeAttribute(nodeId, 'y', attrs.treeAnchorY ?? attrs.y);
+          });
+
+          for (const layerNodeIds of nodesByLayer.values()) {
+            const sortedIds = [...layerNodeIds].sort(
+              (a, b) => graph.getNodeAttribute(a, 'x') - graph.getNodeAttribute(b, 'x'),
+            );
+
+            for (let i = 1; i < sortedIds.length; i++) {
+              const leftId = sortedIds[i - 1];
+              const rightId = sortedIds[i];
+              const leftAttrs = graph.getNodeAttributes(leftId);
+              const rightAttrs = graph.getNodeAttributes(rightId);
+              const minGap = Math.max(32, (leftAttrs.size + rightAttrs.size) * 1.7);
+              const gap = rightAttrs.x - leftAttrs.x;
+
+              if (gap < minGap - 1.5) {
+                const push = ((minGap - gap) / 2) * 0.18;
+                graph.setNodeAttribute(
+                  leftId,
+                  'x',
+                  clamp(leftAttrs.x - push, -TREE_MAX_X, TREE_MAX_X),
+                );
+                graph.setNodeAttribute(
+                  rightId,
+                  'x',
+                  clamp(rightAttrs.x + push, -TREE_MAX_X, TREE_MAX_X),
+                );
+              }
+            }
+          }
+        }
+
         sigmaRef.current?.refresh();
 
-        setIsLayoutRunning(false);
-      }
-    }, duration);
-  }, []);
+        const averageVelocity = totalVelocity / Math.max(1, graph.order);
+        const elapsed = timestamp - (treeLayoutStartRef.current ?? timestamp);
+
+        if (
+          elapsed >= TREE_LAYOUT_MIN_DURATION &&
+          maxVelocity < 0.035 &&
+          activeNodes <= Math.max(2, Math.floor(graph.order * 0.01)) &&
+          averageVelocity < 0.03
+        ) {
+          treeStableFramesRef.current += 1;
+        } else {
+          treeStableFramesRef.current = 0;
+        }
+
+        if (
+          treeStableFramesRef.current >= TREE_LAYOUT_STABILITY_FRAMES ||
+          elapsed >= TREE_LAYOUT_MAX_DURATION
+        ) {
+          stopTreeLayout(true);
+          return;
+        }
+
+        treeLayoutFrameRef.current = requestAnimationFrame(step);
+      };
+
+      treeLayoutFrameRef.current = requestAnimationFrame(step);
+    },
+    [stopAllLayouts, stopTreeLayout],
+  );
+
+  // Run ForceAtlas2 layout
+  const runLayout = useCallback(
+    (graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>) => {
+      const nodeCount = graph.order;
+      if (nodeCount === 0) return;
+
+      stopAllLayouts(false);
+
+      // Get settings
+      const inferredSettings = forceAtlas2.inferSettings(graph);
+      const customSettings = getFA2Settings(nodeCount);
+      const settings = { ...inferredSettings, ...customSettings };
+
+      const layout = new FA2Layout(graph, { settings });
+
+      layoutRef.current = layout;
+      layout.start();
+      setIsLayoutRunning(true);
+
+      const duration = getLayoutDuration(nodeCount);
+
+      layoutTimeoutRef.current = setTimeout(() => {
+        if (layoutRef.current) {
+          layoutRef.current.stop();
+          layoutRef.current = null;
+
+          // Light noverlap cleanup
+          noverlap.assign(graph, NOVERLAP_SETTINGS);
+          sigmaRef.current?.refresh();
+
+          setIsLayoutRunning(false);
+        }
+      }, duration);
+    },
+    [stopAllLayouts],
+  );
 
   const setGraph = useCallback(
     (newGraph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>) => {
       const sigma = sigmaRef.current;
       if (!sigma) return;
 
-      if (layoutRef.current) {
-        layoutRef.current.kill();
-        layoutRef.current = null;
-      }
-      if (layoutTimeoutRef.current) {
-        clearTimeout(layoutTimeoutRef.current);
-        layoutTimeoutRef.current = null;
-      }
+      stopAllLayouts(false);
 
       graphRef.current = newGraph;
       sigma.setGraph(newGraph);
       setSelectedNode(null);
 
-      // Only run force layout in force mode
-      if (options.layoutMode !== 'tree') {
+      if (options.layoutMode === 'tree') {
+        runTreeLayout(newGraph);
+      } else {
         runLayout(newGraph);
       }
 
       sigma.getCamera().animatedReset({ duration: 500 });
     },
-    [runLayout, setSelectedNode, options.layoutMode],
+    [options.layoutMode, runLayout, runTreeLayout, setSelectedNode, stopAllLayouts],
   );
 
   const focusNode = useCallback((nodeId: string) => {
@@ -622,27 +893,16 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const startLayout = useCallback(() => {
     const graph = graphRef.current;
     if (!graph || graph.order === 0) return;
-    runLayout(graph);
-  }, [runLayout]);
+    if (options.layoutMode === 'tree') {
+      runTreeLayout(graph);
+    } else {
+      runLayout(graph);
+    }
+  }, [options.layoutMode, runLayout, runTreeLayout]);
 
   const stopLayout = useCallback(() => {
-    if (layoutTimeoutRef.current) {
-      clearTimeout(layoutTimeoutRef.current);
-      layoutTimeoutRef.current = null;
-    }
-    if (layoutRef.current) {
-      layoutRef.current.stop();
-      layoutRef.current = null;
-
-      const graph = graphRef.current;
-      if (graph) {
-        noverlap.assign(graph, NOVERLAP_SETTINGS);
-        sigmaRef.current?.refresh();
-      }
-
-      setIsLayoutRunning(false);
-    }
-  }, []);
+    stopAllLayouts(true);
+  }, [stopAllLayouts]);
 
   const refreshHighlights = useCallback(() => {
     sigmaRef.current?.refresh();
