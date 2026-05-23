@@ -142,6 +142,10 @@ const TREE_VELOCITY_DEADZONE = 0.01;
 const TREE_LAYER_GRAVITY = 0.06; // stronger gravity keeps nodes near their layer center
 const TREE_LAYER_BAND_HALF = 55; // ±55px from layer center Y
 const TREE_LAYER_BOUNDARY_RESISTANCE = 10; // progressive resistance near band edges
+// Spread force: weak pull toward ideal even-spacing rank within each layer.
+// Balanced against springs: hierarchy-connected clusters resist and stay grouped;
+// isolated / same-layer-only nodes fill the gaps.
+const TREE_SPREAD_STRENGTH = 0.0025;
 
 const TREE_EDGE_WEIGHTS: Record<string, number> = {
   CONTAINS: 0.09,
@@ -802,6 +806,32 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
             forceY.set(nodeA.id, (forceY.get(nodeA.id) ?? 0) - fy);
             forceX.set(nodeB.id, (forceX.get(nodeB.id) ?? 0) + fx);
             forceY.set(nodeB.id, (forceY.get(nodeB.id) ?? 0) + fy);
+          }
+        }
+
+        // 4. Spread force: equalize node density within each layer.
+        //
+        // For each layer, rank nodes by current X, compute where they would sit
+        // in a perfectly even distribution, then add a weak force toward that
+        // ideal position.  Nodes that are held by strong hierarchy springs
+        // (force ≈ 1–2 units) resist and stay clustered; nodes without a
+        // strong spring anchor (isolated or same-layer-only) drift to fill gaps.
+        // Net effect: dense centre spreads outward, sparse edges fill in.
+        const spreadByLayer = new Map<number, Array<{ id: string; x: number }>>();
+        graph.forEachNode((nodeId, attrs) => {
+          const layer = attrs.treeLayer ?? 0;
+          if (!spreadByLayer.has(layer)) spreadByLayer.set(layer, []);
+          spreadByLayer.get(layer)!.push({ id: nodeId, x: attrs.x });
+        });
+        for (const [, layerNodes] of spreadByLayer) {
+          if (layerNodes.length < 2) continue;
+          layerNodes.sort((a, b) => a.x - b.x);
+          const count = layerNodes.length;
+          const spacing = (TREE_MAX_X * 2) / count;
+          for (let i = 0; i < count; i++) {
+            const { id, x } = layerNodes[i];
+            const idealX = -TREE_MAX_X + (i + 0.5) * spacing;
+            forceX.set(id, (forceX.get(id) ?? 0) + (idealX - x) * TREE_SPREAD_STRENGTH * dtScale);
           }
         }
 
