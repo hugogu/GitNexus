@@ -629,6 +629,40 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         layerCenterY.set(layer, sum / (layerYCount.get(layer) ?? 1));
       }
 
+      // Compute each node's preferred Y position within its layer band.
+      //
+      // A node in Layer L that connects upward (to Layer L-1, which has higher Y)
+      // should sit near the TOP of the band — it shortens those vertical edges.
+      // A node connecting only downward (to Layer L+1) should sit at the BOTTOM.
+      // A node that connects in both directions, or only within its own layer,
+      // goes to the center — freeing the edges of the band for directional nodes.
+      //
+      // bias ∈ [-1, +1]:  +1 = top of band (higher Y, toward layer above),
+      //                    -1 = bottom of band (lower Y, toward layer below),
+      //                     0 = layer center.
+      const nodeYBias = new Map<string, number>();
+      graph.forEachNode((nodeId, attrs) => {
+        const layer = attrs.treeLayer ?? 0;
+        let aboveCount = 0;
+        let belowCount = 0;
+        graph.forEachNeighbor(nodeId, (_, nAttrs) => {
+          const nLayer = nAttrs.treeLayer ?? 0;
+          if (nLayer < layer) aboveCount++;
+          if (nLayer > layer) belowCount++;
+        });
+        // Weighted ratio: (above − below) / total, scaled to ±0.55 of band half.
+        const total = aboveCount + belowCount;
+        nodeYBias.set(nodeId, total > 0 ? ((aboveCount - belowCount) / total) * 0.55 : 0);
+      });
+
+      // Pre-position nodes at their preferred Y to reduce physics convergence time.
+      graph.forEachNode((nodeId, attrs) => {
+        const layer = attrs.treeLayer ?? 0;
+        const cy = layerCenterY.get(layer) ?? attrs.y;
+        const bias = nodeYBias.get(nodeId) ?? 0;
+        graph.setNodeAttribute(nodeId, 'y', cy + bias * TREE_LAYER_BAND_HALF * 0.6);
+      });
+
       setIsLayoutRunning(true);
 
       const step = (timestamp: number) => {
@@ -667,12 +701,17 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         const forceX = new Map<string, number>();
         const forceY = new Map<string, number>();
 
-        // 1. Layer gravity: soft pull toward each layer's Y band center
+        // 1. Layer gravity: soft pull toward each node's preferred Y within its band.
+        // Directional nodes (above-only or below-only connections) are pulled to the
+        // top or bottom of the band; bidirectional / same-layer-only nodes go to
+        // the center.  This leaves band edges free for nodes that actually use them.
         graph.forEachNode((nodeId, attrs) => {
           const layer = attrs.treeLayer ?? 0;
           const centerY = layerCenterY.get(layer) ?? attrs.y;
+          const bias = nodeYBias.get(nodeId) ?? 0;
+          const targetY = centerY + bias * TREE_LAYER_BAND_HALF;
           forceX.set(nodeId, 0);
-          forceY.set(nodeId, (centerY - attrs.y) * TREE_LAYER_GRAVITY * dtScale);
+          forceY.set(nodeId, (targetY - attrs.y) * TREE_LAYER_GRAVITY * dtScale);
         });
 
         // 2. Edge springs — X and Y handled separately.
