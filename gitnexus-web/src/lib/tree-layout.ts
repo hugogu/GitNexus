@@ -68,12 +68,17 @@ const LAYER_HEIGHT = CANVAS_HEIGHT / LAYER_COUNT; // 200
 const PADDING_X = 60;
 const PADDING_Y = 15;
 const MIN_NODE_GAP = 45;
-const HIERARCHY_RELATIONS = new Set(['CONTAINS', 'DEFINES']);
+// HAS_METHOD and HAS_PROPERTY are Kotlin/Java-style hierarchy edges
+// (Class→Method, Class→Property). Treat them like DEFINES for layout purposes
+// so Methods/Properties cluster beneath their parent Class horizontally.
+const HIERARCHY_RELATIONS = new Set(['CONTAINS', 'DEFINES', 'HAS_METHOD', 'HAS_PROPERTY']);
 const MAX_X = (CANVAS_WIDTH - PADDING_X * 2) / 2;
 
 const RELATION_SPRING_WEIGHTS: Record<string, number> = {
   CONTAINS: 0.12,
   DEFINES: 0.16,
+  HAS_METHOD: 0.16, // Same as DEFINES — keeps methods near their class
+  HAS_PROPERTY: 0.14, // Slightly weaker — properties can spread more
   IMPORTS: 0.2,
   CALLS: 0.24,
   EXTENDS: 0.18,

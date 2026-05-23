@@ -362,6 +362,8 @@ export const knowledgeGraphToTreeGraphology = (
   const HIERARCHY_EDGE_STYLES: Record<string, { color: string; sizeMultiplier: number }> = {
     CONTAINS: { color: EDGE_INFO.CONTAINS.color, sizeMultiplier: 0.3 },
     DEFINES: { color: EDGE_INFO.DEFINES.color, sizeMultiplier: 0.3 },
+    HAS_METHOD: { color: EDGE_INFO.DEFINES.color, sizeMultiplier: 0.3 }, // Kotlin Class→Method hierarchy
+    HAS_PROPERTY: { color: EDGE_INFO.CONTAINS.color, sizeMultiplier: 0.25 }, // Kotlin Class→Property hierarchy
   };
 
   const CROSS_EDGE_STYLES: Record<string, { color: string; sizeMultiplier: number }> = {

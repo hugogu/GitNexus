@@ -50,8 +50,8 @@ export const NODE_SIZES: Record<NodeLabel, number> = {
   File: 6, // Common element - smaller than folders
   Class: 8, // Important code structure
   Function: 4, // Common code element - small
-  Method: 3, // Smaller than function
-  Variable: 2, // Tiny - leaf node
+  Method: 5, // Bumped from 3 — must be large enough to click at full graph zoom
+  Variable: 3, // Leaf node — slightly larger for clickability
   Interface: 7, // Important type definition
   Enum: 5, // Type definition
   Decorator: 2, // Tiny modifier
@@ -65,13 +65,13 @@ export const NODE_SIZES: Record<NodeLabel, number> = {
   Trait: 7, // Like Interface
   Impl: 3, // Like Method
   TypeAlias: 3, // Like Type
-  Const: 2, // Like Variable
-  Static: 2, // Like Variable
+  Const: 3, // Like Variable
+  Static: 3, // Like Variable
   Namespace: 13, // Like Module
   Union: 5, // Like Enum
   Typedef: 3, // Like Type
   Macro: 2, // Like Decorator
-  Property: 2, // Like Variable
+  Property: 3, // Like Variable — Kotlin/Java field nodes, must be visible and clickable
   Record: 8, // Like Class
   Delegate: 3, // Like Method
   Annotation: 2, // Like Decorator
@@ -101,7 +101,9 @@ export const getCommunityColor = (communityIndex: number): string => {
   return COMMUNITY_COLORS[communityIndex % COMMUNITY_COLORS.length];
 };
 
-// Labels to show by default (hide imports by default as they clutter)
+// Labels to show by default (hide imports by default as they clutter).
+// Property/Const are the Kotlin/Java equivalents of Variable — include them so
+// Kotlin repos don't appear to have no leaf nodes.
 export const DEFAULT_VISIBLE_LABELS: NodeLabel[] = [
   'Project',
   'Package',
@@ -112,6 +114,8 @@ export const DEFAULT_VISIBLE_LABELS: NodeLabel[] = [
   'Function',
   'Method',
   'Variable',
+  'Property', // Kotlin/Java fields (HAS_PROPERTY + DEFINES File→Property)
+  'Const', // Top-level constants
   'Interface',
   'Enum',
   'Type',
@@ -128,6 +132,8 @@ export const FILTERABLE_LABELS: NodeLabel[] = [
   'Function',
   'Method',
   'Variable',
+  'Property', // Kotlin/Java field nodes
+  'Const',
   'Decorator',
   'Import',
 ];
