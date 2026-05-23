@@ -130,7 +130,6 @@ const getLayoutDuration = (nodeCount: number): number => {
 };
 
 const TREE_MAX_X = 540;
-const TREE_MAX_Y = 400;
 const TREE_REPULSION_RANGE = 130;
 const TREE_LAYOUT_MAX_DURATION = 18000;
 const TREE_LAYOUT_STABILITY_FRAMES = 24;
@@ -138,10 +137,11 @@ const TREE_TARGET_FRAME_MS = 32;
 const TREE_LAYOUT_MIN_DURATION = 1500;
 const TREE_FORCE_DEADZONE = 0.005;
 const TREE_VELOCITY_DEADZONE = 0.01;
-// Y is free within each layer's band; gravity + boundary resistance keep layers separate
-const TREE_LAYER_GRAVITY = 0.04;
-const TREE_LAYER_BAND_HALF = 72; // ±72px from layer center Y
-const TREE_LAYER_BOUNDARY_RESISTANCE = 7;
+// Y is free within each layer's band; gravity + boundary resistance keep layers separate.
+// Band half kept at 55px so nodes don't drift far past the initial camera-fit viewport.
+const TREE_LAYER_GRAVITY = 0.06; // stronger gravity keeps nodes near their layer center
+const TREE_LAYER_BAND_HALF = 55; // ±55px from layer center Y
+const TREE_LAYER_BOUNDARY_RESISTANCE = 10; // progressive resistance near band edges
 
 const TREE_EDGE_WEIGHTS: Record<string, number> = {
   CONTAINS: 0.09,
@@ -247,6 +247,9 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
 
     if (refresh) {
       sigmaRef.current?.refresh();
+      // Re-fit camera to the actual settled positions — nodes may have drifted
+      // from their initial anchors during simulation (especially small/leaf nodes).
+      sigmaRef.current?.getCamera().animatedReset({ duration: 600 });
     }
   }, []);
 
@@ -686,7 +689,8 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
           if (stretch <= 0) return;
 
           const weight = TREE_EDGE_WEIGHTS[edgeAttrs.relationType] ?? 0.18;
-          const fx = (dx / distance) * stretch * weight * 0.025 * dtScale;
+          // Stronger X spring (0.04) so stretched edges can pull nodes past local repulsion barriers.
+          const fx = (dx / distance) * stretch * weight * 0.04 * dtScale;
           // Y spring is weaker to avoid fighting layer gravity
           const fy = (dy / distance) * stretch * weight * 0.012 * dtScale;
 

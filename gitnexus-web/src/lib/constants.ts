@@ -101,7 +101,7 @@ export const getCommunityColor = (communityIndex: number): string => {
   return COMMUNITY_COLORS[communityIndex % COMMUNITY_COLORS.length];
 };
 
-// Labels to show by default (hide imports and variables by default as they clutter)
+// Labels to show by default (hide imports by default as they clutter)
 export const DEFAULT_VISIBLE_LABELS: NodeLabel[] = [
   'Project',
   'Package',
@@ -111,6 +111,7 @@ export const DEFAULT_VISIBLE_LABELS: NodeLabel[] = [
   'Class',
   'Function',
   'Method',
+  'Variable',
   'Interface',
   'Enum',
   'Type',

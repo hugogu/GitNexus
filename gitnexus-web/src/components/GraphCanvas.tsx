@@ -227,7 +227,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     filterGraphByDepth(sigmaGraph, appSelectedNode?.id || null, depthFilter, visibleLabels);
     sigma.refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sigmaRef identity never changes
-  }, [visibleLabels, depthFilter, appSelectedNode]);
+  }, [graph, graphViewMode, visibleLabels, depthFilter, appSelectedNode]);
 
   // Sync app selected node with sigma
   useEffect(() => {
