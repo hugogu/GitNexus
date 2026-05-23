@@ -96,18 +96,21 @@ export const knowledgeGraphToGraphology = (
   // Build parent-child map from hierarchy relationships
   // CONTAINS: Folder -> File
   // DEFINES: File -> Function/Class/Interface/Method
-  // IMPORTS: File -> File dependency edge (not hierarchy)
-  // parent -> children
+  // parent -> children (used only for initial spatial seeding before FA2 runs)
   const parentToChildren = new Map<string, string[]>();
   // child -> parent
   const childToParent = new Map<string, string>();
 
-  const hierarchyRelations = new Set(['CONTAINS', 'DEFINES']);
+  // IMPORTS is not a true structural hierarchy, but treating it as a spatial
+  // seed helps FA2 converge for import-heavy codebases: files that import each
+  // other start near each other, so the simulation doesn't have to close many
+  // long cross-package springs from scratch.
+  const spatialSeedRelations = new Set(['CONTAINS', 'DEFINES', 'IMPORTS']);
 
   knowledgeGraph.relationships.forEach((rel) => {
-    // These relationships represent parent-child hierarchy for positioning
-    if (hierarchyRelations.has(rel.type)) {
-      // source CONTAINS/DEFINES target, so source is parent
+    // These relationships determine initial node positions (not graph semantics)
+    if (spatialSeedRelations.has(rel.type)) {
+      // source CONTAINS/DEFINES/IMPORTS target → source acts as spatial parent
       if (!parentToChildren.has(rel.sourceId)) {
         parentToChildren.set(rel.sourceId, []);
       }
