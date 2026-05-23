@@ -191,211 +191,88 @@ function initGridPositions(
 }
 
 /**
- * Auto layout: physics-based optimization that minimizes edge lengths while
- * keeping nodes in their type layers. Uses a lightweight force simulation.
+ * Auto layout: grid-based with organic jitter and edge-aware clustering.
+ * Keeps the full width of the grid layout while adding organic feel.
  */
 export function calculateAutoLayout(graph: KnowledgeGraph): Map<string, TreeNodePosition> {
-  const degrees = calculateDegrees(graph);
-
-  // 1. Initialize from grid layout (alphabetical order)
+  // 1. Start with grid layout (provides good X distribution)
   const positions = initGridPositions(graph, 'alphabetical');
 
-  // Build node lookup and edge list
-  const nodes: LayoutNode[] = [];
-  const nodeMap = new Map<string, LayoutNode>();
+  // 2. Add organic jitter to avoid rigid grid appearance
+  for (const [nodeId, pos] of positions) {
+    const jitterX = (deterministicHash(nodeId) - 0.5) * 35;
+    const jitterY = (deterministicHash(nodeId + 'y') - 0.5) * 25;
+    pos.x += jitterX;
+    pos.y += jitterY;
+  }
 
+  // 3. Build adjacency list for connected nodes (non-hierarchy only)
+  const adjacencies = new Map<string, string[]>();
   for (const node of graph.nodes) {
-    const pos = positions.get(node.id);
-    if (!pos) continue;
-
-    const layoutNode: LayoutNode = {
-      id: node.id,
-      x: pos.x,
-      y: pos.y,
-      layer: pos.depth,
-      size: pos.size,
-      degree: degrees.get(node.id) || 0,
-      label: node.label,
-    };
-
-    nodes.push(layoutNode);
-    nodeMap.set(node.id, layoutNode);
+    adjacencies.set(node.id, []);
   }
-
-  // Build edge list (only non-hierarchy edges for attraction)
-  const edges: { source: string; target: string; type: string }[] = [];
-  const hierarchyTypes = new Set(['CONTAINS', 'DEFINES']);
-
   for (const rel of graph.relationships) {
-    if (nodeMap.has(rel.sourceId) && nodeMap.has(rel.targetId)) {
-      edges.push({ source: rel.sourceId, target: rel.targetId, type: rel.type });
+    if (rel.type !== 'CONTAINS' && rel.type !== 'DEFINES') {
+      if (adjacencies.has(rel.sourceId) && adjacencies.has(rel.targetId)) {
+        adjacencies.get(rel.sourceId)!.push(rel.targetId);
+        adjacencies.get(rel.targetId)!.push(rel.sourceId);
+      }
     }
   }
 
-  // Group edges by type for clustered attraction
-  const edgesByType = new Map<string, typeof edges>();
-  for (const edge of edges) {
-    if (!edgesByType.has(edge.type)) {
-      edgesByType.set(edge.type, []);
-    }
-    edgesByType.get(edge.type)!.push(edge);
-  }
-
-  // 2. Force-directed simulation with layer constraints
-  const ITERATIONS = 25;
-  const ATTRACTION_STRENGTH = 0.08;
-  const REPULSION_STRENGTH = 150;
-  const LAYER_CONSTRAINT_STRENGTH = 0.15;
-  const SAME_TYPE_ATTRACTION = 0.02;
-  const DAMPING = 0.85;
-  const NOISE_SCALE = 12;
-
-  // Layer target Y positions (centered)
-  const layerTargetY: number[] = [];
-  for (let i = 0; i < LAYER_COUNT; i++) {
-    layerTargetY.push(i * LAYER_HEIGHT + LAYER_HEIGHT / 2 - CANVAS_HEIGHT / 2);
-  }
-
-  // Velocities
-  const velocities = new Map<string, { vx: number; vy: number }>();
-  for (const node of nodes) {
-    velocities.set(node.id, { vx: 0, vy: 0 });
-  }
-
+  // 4. Pull connected nodes closer in X direction (only within same or adjacent layers)
+  // This creates clusters without collapsing the overall width
+  const ITERATIONS = 8;
   for (let iter = 0; iter < ITERATIONS; iter++) {
-    const temperature = 1 - iter / ITERATIONS;
+    for (const [nodeId, neighbors] of adjacencies) {
+      const pos = positions.get(nodeId);
+      if (!pos || neighbors.length === 0) continue;
 
-    // Reset forces
-    const forces = new Map<string, { fx: number; fy: number }>();
-    for (const node of nodes) {
-      forces.set(node.id, { fx: 0, fy: 0 });
-    }
+      let avgNeighborX = 0;
+      let count = 0;
 
-    // 2a. Edge attraction (minimize edge lengths, grouped by type)
-    for (const [edgeType, typeEdges] of edgesByType) {
-      const typeWeight = hierarchyTypes.has(edgeType) ? 0.3 : 1.0;
-
-      for (const edge of typeEdges) {
-        const src = nodeMap.get(edge.source)!;
-        const tgt = nodeMap.get(edge.target)!;
-
-        const dx = tgt.x - src.x;
-        const dy = tgt.y - src.y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-
-        // Target distance based on layer difference
-        const layerDiff = Math.abs(src.layer - tgt.layer);
-        const targetDist = 80 + layerDiff * 60;
-
-        const force = ((dist - targetDist) / dist) * ATTRACTION_STRENGTH * typeWeight;
-
-        const f = forces.get(src.id)!;
-        f.fx += dx * force;
-        f.fy += dy * force;
-
-        const f2 = forces.get(tgt.id)!;
-        f2.fx -= dx * force;
-        f2.fy -= dy * force;
-      }
-    }
-
-    // 2b. Node repulsion (avoid overlap)
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const a = nodes[i];
-        const b = nodes[j];
-
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-
-        const minDist = (a.size + b.size) * 2.5;
-        if (dist < minDist) {
-          const force = ((minDist - dist) / dist) * REPULSION_STRENGTH;
-
-          const fa = forces.get(a.id)!;
-          fa.fx -= (dx / dist) * force;
-          fa.fy -= (dy / dist) * force;
-
-          const fb = forces.get(b.id)!;
-          fb.fx += (dx / dist) * force;
-          fb.fy += (dy / dist) * force;
+      for (const neighborId of neighbors) {
+        const neighborPos = positions.get(neighborId);
+        if (neighborPos && Math.abs(neighborPos.depth - pos.depth) <= 1) {
+          avgNeighborX += neighborPos.x;
+          count++;
         }
       }
-    }
 
-    // 2c. Layer constraint (soft constraint on Y)
-    for (const node of nodes) {
-      const targetY = layerTargetY[node.layer];
-      const dy = targetY - node.y;
-      const f = forces.get(node.id)!;
-      f.fy += dy * LAYER_CONSTRAINT_STRENGTH;
-    }
-
-    // 2d. Same-type attraction (cluster same labels)
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const a = nodes[i];
-        const b = nodes[j];
-
-        if (a.label === b.label && a.layer === b.layer) {
-          const dx = b.x - a.x;
-          const dy = b.y - a.y;
-          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-
-          if (dist > 100) {
-            const force = SAME_TYPE_ATTRACTION;
-            const fa = forces.get(a.id)!;
-            fa.fx += (dx / dist) * force;
-            fa.fy += (dy / dist) * force;
-
-            const fb = forces.get(b.id)!;
-            fb.fx -= (dx / dist) * force;
-            fb.fy -= (dy / dist) * force;
-          }
-        }
+      if (count > 0) {
+        avgNeighborX /= count;
+        // Gentle pull towards connected neighbors
+        const pullStrength = 0.08;
+        pos.x = pos.x * (1 - pullStrength) + avgNeighborX * pullStrength;
       }
-    }
-
-    // 2e. Random noise (organic feel)
-    for (const node of nodes) {
-      const hash = deterministicHash(node.id + iter);
-      const f = forces.get(node.id)!;
-      f.fx += (hash - 0.5) * NOISE_SCALE * temperature;
-      f.fy += (deterministicHash(node.id + iter + 100) - 0.5) * NOISE_SCALE * temperature;
-    }
-
-    // 3. Update positions with degree-based inertia
-    for (const node of nodes) {
-      const vel = velocities.get(node.id)!;
-      const f = forces.get(node.id)!;
-
-      // Higher degree = more mass = slower movement
-      const mass = 1 + node.degree * 0.05;
-
-      vel.vx = (vel.vx + f.fx / mass) * DAMPING;
-      vel.vy = (vel.vy + f.fy / mass) * DAMPING;
-
-      node.x += vel.vx;
-      node.y += vel.vy;
-
-      // Keep within canvas bounds
-      node.x = Math.max(-CANVAS_WIDTH / 2, Math.min(CANVAS_WIDTH / 2, node.x));
     }
   }
 
-  // 4. Output
-  const result = new Map<string, TreeNodePosition>();
-  for (const node of nodes) {
-    result.set(node.id, {
-      x: node.x,
-      y: node.y,
-      size: node.size,
-      depth: node.layer,
-    });
+  // 5. Apply repulsion to prevent overlap (lightweight, only when needed)
+  for (const [idA, posA] of positions) {
+    for (const [idB, posB] of positions) {
+      if (idA >= idB) continue;
+      if (posA.depth !== posB.depth) continue; // Only within same layer
+
+      const dx = posB.x - posA.x;
+      const dy = posB.y - posB.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      const minDist = (posA.size + posB.size) * 2.2;
+
+      if (dist < minDist) {
+        const push = ((minDist - dist) / dist) * 3;
+        const pushX = (dx / dist) * push;
+        const pushY = (dy / dist) * push;
+
+        posA.x -= pushX;
+        posA.y -= pushY;
+        posB.x += pushX;
+        posB.y += pushY;
+      }
+    }
   }
 
-  return result;
+  return positions;
 }
 
 export function calculateTreeLayout(
