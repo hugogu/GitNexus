@@ -14,31 +14,34 @@ const HIERARCHY_RELATIONS = new Set(['CONTAINS', 'DEFINES', 'IMPORTS']);
 const ROOT_TYPES = new Set(['Project', 'Package', 'Module', 'Folder']);
 
 const LEVEL_RANGES = [
-  { minY: 0, maxY: 120 },
-  { minY: 140, maxY: 340 },
-  { minY: 360, maxY: 560 },
-  { minY: 580, maxY: 740 },
-  { minY: 760, maxY: 860 },
-  { minY: 880, maxY: 940 },
+  { minY: 0, maxY: 300 },
+  { minY: 350, maxY: 650 },
+  { minY: 700, maxY: 1000 },
+  { minY: 1050, maxY: 1300 },
+  { minY: 1350, maxY: 1550 },
+  { minY: 1600, maxY: 1750 },
 ];
 
 const ROOT_SPACING = 400;
 const MIN_LEAF_SPACING = 80;
 
 function deterministicHash(str: string): number {
-  let hash = 0;
+  let hash = 5381;
   for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash = hash & hash;
+    hash = (hash << 5) + hash + str.charCodeAt(i);
+    hash |= 0; // Convert to 32-bit integer
   }
-  return Math.abs(hash) / 2147483647;
+  return (Math.abs(hash) % 10000) / 10000;
 }
 
 function getLevelRange(depth: number): { minY: number; maxY: number } {
   if (depth < LEVEL_RANGES.length) return LEVEL_RANGES[depth];
   const last = LEVEL_RANGES[LEVEL_RANGES.length - 1];
-  return { minY: last.maxY + 20, maxY: last.maxY + 80 };
+  const extraDepth = depth - LEVEL_RANGES.length + 1;
+  return {
+    minY: last.maxY + 50 + (extraDepth - 1) * 200,
+    maxY: last.maxY + 250 + (extraDepth - 1) * 200,
+  };
 }
 
 function calculateY(nodeId: string, depth: number, degree: number): number {
@@ -133,6 +136,21 @@ export function calculateTreeLayout(
     }
   }
 
+  // Fallback: if no ROOT_TYPE nodes are parentless, use the first node as root
+  // and treat others as orphans so they get distributed across Y levels
+  if (roots.length === 0) {
+    let firstRootSet = false;
+    for (const node of graph.nodes) {
+      if (!childToParent.has(node.id)) {
+        if (!firstRootSet) {
+          roots.push(node.id);
+          firstRootSet = true;
+        }
+        // Others will be handled as orphans below
+      }
+    }
+  }
+
   // Sort roots
   roots.sort((a, b) => {
     const nodeA = nodeMap.get(a)!;
@@ -199,17 +217,22 @@ export function calculateTreeLayout(
   }
 
   // Handle orphan nodes (no parent, not a root type)
+  // Distribute them across multiple Y levels to avoid a single horizontal line
   const orphanX = currentX + 200;
   let orphanOffset = 0;
+  let orphanIndex = 0;
   for (const node of graph.nodes) {
     if (!positions.has(node.id)) {
+      // Cycle through depths 0, 1, 2 to ensure vertical distribution
+      const orphanDepth = orphanIndex % 3;
       positions.set(node.id, {
         x: orphanX + orphanOffset,
-        y: calculateY(node.id, 0, degrees.get(node.id) || 0),
-        size: calculateNodeSize(0, node.label),
-        depth: 0,
+        y: calculateY(node.id, orphanDepth, degrees.get(node.id) || 0),
+        size: calculateNodeSize(orphanDepth, node.label),
+        depth: orphanDepth,
       });
       orphanOffset += MIN_LEAF_SPACING;
+      orphanIndex++;
     }
   }
 

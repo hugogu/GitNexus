@@ -107,4 +107,34 @@ describe('calculateTreeLayout', () => {
     expect(rootSize).toBeGreaterThan(childSize);
     expect(childSize).toBeGreaterThan(grandchildSize);
   });
+
+  it('should distribute orphan nodes across different Y levels', () => {
+    const graph: KnowledgeGraph = {
+      nodes: [
+        makeNode('a', 'Function', 'fnA'),
+        makeNode('b', 'Function', 'fnB'),
+        makeNode('c', 'Function', 'fnC'),
+        makeNode('d', 'Function', 'fnD'),
+      ],
+      relationships: [],
+    };
+
+    const positions = calculateTreeLayout(graph, 'alphabetical');
+
+    const yValues = [
+      positions.get('a')!.y,
+      positions.get('b')!.y,
+      positions.get('c')!.y,
+      positions.get('d')!.y,
+    ];
+
+    // Orphan nodes should have varying Y coordinates, not all the same
+    const uniqueYValues = new Set(yValues);
+    expect(uniqueYValues.size).toBeGreaterThan(1);
+
+    // Y values should be spread across different ranges (at least 100px difference)
+    const minY = Math.min(...yValues);
+    const maxY = Math.max(...yValues);
+    expect(maxY - minY).toBeGreaterThan(100);
+  });
 });

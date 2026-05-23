@@ -284,7 +284,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
           }`}
         >
           <Network className="h-3.5 w-3.5" />
-          力导向图
+          Force Graph
         </button>
         <button
           onClick={() => handleViewModeChange('tree')}
@@ -295,7 +295,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
           }`}
         >
           <GitBranch className="h-3.5 w-3.5" />
-          树形图
+          Tree View
         </button>
       </div>
 
@@ -310,7 +310,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
                 : 'text-text-secondary hover:bg-hover'
             }`}
           >
-            按字母
+            Alphabetical
           </button>
           <button
             onClick={() => handleSortModeChange('degree')}
@@ -320,7 +320,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
                 : 'text-text-secondary hover:bg-hover'
             }`}
           >
-            按调用次数
+            By Calls
           </button>
         </div>
       )}
