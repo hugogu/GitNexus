@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { knowledgeGraphToTreeGraphology } from './graph-adapter';
 import type { KnowledgeGraph } from '../core/graph/types';
 import type { GraphNode } from 'gitnexus-shared';
+import { EDGE_INFO } from './constants';
 
 function makeNode(id: string, label: string, name: string): GraphNode {
   return {
@@ -61,8 +62,10 @@ describe('knowledgeGraphToTreeGraphology', () => {
     sigmaGraph.forEachEdge((edge, attrs) => {
       if (attrs.relationType === 'CONTAINS') {
         expect(attrs.isHierarchyEdge).toBe(true);
+        expect(attrs.color).toBe(EDGE_INFO.CONTAINS.color);
       } else if (attrs.relationType === 'CALLS') {
         expect(attrs.isHierarchyEdge).toBe(false);
+        expect(attrs.color).toBe(EDGE_INFO.CALLS.color);
       }
     });
   });
@@ -78,6 +81,7 @@ describe('knowledgeGraphToTreeGraphology', () => {
     sigmaGraph.forEachEdge((edge, attrs) => {
       if (attrs.relationType === 'IMPORTS') {
         expect(attrs.isHierarchyEdge).toBe(false);
+        expect(attrs.color).toBe(EDGE_INFO.IMPORTS.color);
       }
     });
   });

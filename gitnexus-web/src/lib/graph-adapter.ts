@@ -1,7 +1,7 @@
 import Graph from 'graphology';
 import type { NodeLabel } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../core/graph/types';
-import { NODE_COLORS, NODE_SIZES, getCommunityColor } from './constants';
+import { EDGE_INFO, NODE_COLORS, NODE_SIZES, getCommunityColor } from './constants';
 import { calculateTreeLayout } from './tree-layout';
 
 export interface SigmaNodeAttributes {
@@ -354,14 +354,15 @@ export const knowledgeGraphToTreeGraphology = (
   const edgeBaseSize = nodeCount > 20000 ? 0.4 : nodeCount > 5000 ? 0.6 : 1.0;
 
   const HIERARCHY_EDGE_STYLES: Record<string, { color: string; sizeMultiplier: number }> = {
-    CONTAINS: { color: '#3a3a4a', sizeMultiplier: 0.3 },
-    DEFINES: { color: '#3a4a4a', sizeMultiplier: 0.3 },
+    CONTAINS: { color: EDGE_INFO.CONTAINS.color, sizeMultiplier: 0.3 },
+    DEFINES: { color: EDGE_INFO.DEFINES.color, sizeMultiplier: 0.3 },
   };
 
   const CROSS_EDGE_STYLES: Record<string, { color: string; sizeMultiplier: number }> = {
-    CALLS: { color: '#7c3aed', sizeMultiplier: 0.8 },
-    EXTENDS: { color: '#c2410c', sizeMultiplier: 1.0 },
-    IMPLEMENTS: { color: '#be185d', sizeMultiplier: 0.9 },
+    IMPORTS: { color: EDGE_INFO.IMPORTS.color, sizeMultiplier: 0.6 },
+    CALLS: { color: EDGE_INFO.CALLS.color, sizeMultiplier: 0.8 },
+    EXTENDS: { color: EDGE_INFO.EXTENDS.color, sizeMultiplier: 1.0 },
+    IMPLEMENTS: { color: EDGE_INFO.IMPLEMENTS.color, sizeMultiplier: 0.9 },
   };
 
   knowledgeGraph.relationships.forEach((rel) => {

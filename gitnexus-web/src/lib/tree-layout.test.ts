@@ -171,4 +171,47 @@ describe('calculateTreeLayout', () => {
     expect(Math.abs(positions.get('fileB')!.x - positions.get('fnB')!.x)).toBeLessThan(120);
     expect(Math.abs(positions.get('fileC')!.x - positions.get('fnC')!.x)).toBeLessThan(120);
   });
+
+  it('should let long edges pull connected nodes closer without breaking their layer', () => {
+    const nodes = Array.from({ length: 10 }, (_, i) => makeNode(`fn${i}`, 'Function', `fn${i}`));
+
+    const baseline = calculateTreeLayout({ nodes, relationships: [] });
+    const relaxed = calculateTreeLayout({
+      nodes,
+      relationships: [
+        { id: 'r1', type: 'CALLS', sourceId: 'fn0', targetId: 'fn9' },
+        { id: 'r2', type: 'CALLS', sourceId: 'fn1', targetId: 'fn8' },
+      ],
+    });
+
+    const baselineDistance = Math.abs(baseline.get('fn0')!.x - baseline.get('fn9')!.x);
+    const relaxedDistance = Math.abs(relaxed.get('fn0')!.x - relaxed.get('fn9')!.x);
+    expect(relaxedDistance).toBeLessThan(baselineDistance);
+
+    const relaxedYValues = nodes.map((node) => relaxed.get(node.id)!.y);
+    const minY = Math.min(...relaxedYValues);
+    const maxY = Math.max(...relaxedYValues);
+    expect(maxY - minY).toBeGreaterThan(50);
+    expect(maxY - minY).toBeLessThan(250);
+  });
+
+  it('should preserve layer spread under heavy edge attraction', () => {
+    const nodes: GraphNode[] = [makeNode('file', 'File', 'hub.ts')];
+    for (let i = 0; i < 18; i++) {
+      nodes.push(makeNode(`fn${i}`, 'Function', `fn${i}`));
+    }
+
+    const relationships = Array.from({ length: 18 }, (_, i) => ({
+      id: `r${i}`,
+      type: 'CALLS',
+      sourceId: `fn${i}`,
+      targetId: 'file',
+    }));
+
+    const positions = calculateTreeLayout({ nodes, relationships });
+    const functionXs = Array.from({ length: 18 }, (_, i) => positions.get(`fn${i}`)!.x);
+
+    expect(Math.max(...functionXs) - Math.min(...functionXs)).toBeGreaterThan(280);
+    expect(positions.get('file')!.y).toBeGreaterThan(positions.get('fn0')!.y);
+  });
 });

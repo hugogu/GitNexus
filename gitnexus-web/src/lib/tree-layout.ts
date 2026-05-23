@@ -69,6 +69,16 @@ const PADDING_X = 60;
 const PADDING_Y = 15;
 const MIN_NODE_GAP = 45;
 const HIERARCHY_RELATIONS = new Set(['CONTAINS', 'DEFINES']);
+const MAX_X = (CANVAS_WIDTH - PADDING_X * 2) / 2;
+
+const RELATION_SPRING_WEIGHTS: Record<string, number> = {
+  CONTAINS: 0.12,
+  DEFINES: 0.16,
+  IMPORTS: 0.2,
+  CALLS: 0.24,
+  EXTENDS: 0.18,
+  IMPLEMENTS: 0.18,
+};
 
 function calculateNodeSize(layer: number, nodeType: NodeLabel): number {
   const baseSize = NODE_SIZES[nodeType] || 6;
@@ -129,6 +139,82 @@ function buildHierarchyMaps(graph: KnowledgeGraph) {
   }
 
   return { childrenByParent, parentsByChild };
+}
+
+function buildLayerNodeIds(graph: KnowledgeGraph): string[][] {
+  const nodeIdsByLayer: string[][] = Array.from({ length: LAYER_COUNT }, () => []);
+
+  for (const node of graph.nodes) {
+    const layer = getNodeLayer(node);
+    if (layer >= 0 && layer < LAYER_COUNT) {
+      nodeIdsByLayer[layer].push(node.id);
+    }
+  }
+
+  return nodeIdsByLayer;
+}
+
+function getRestEdgeLength(
+  relationType: string,
+  source: TreeNodePosition,
+  target: TreeNodePosition,
+) {
+  const depthGap = Math.abs(source.depth - target.depth);
+  const baseLength = HIERARCHY_RELATIONS.has(relationType) ? 60 : 85;
+  return baseLength + depthGap * 40;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function enforceLayerSpacing(
+  layerNodeIds: string[],
+  positions: Map<string, TreeNodePosition>,
+  anchorXByNode: Map<string, number>,
+) {
+  if (layerNodeIds.length < 2) return;
+
+  const sortedIds = [...layerNodeIds].sort((a, b) => positions.get(a)!.x - positions.get(b)!.x);
+
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 1; i < sortedIds.length; i++) {
+      const prev = positions.get(sortedIds[i - 1])!;
+      const curr = positions.get(sortedIds[i])!;
+      const minGap = Math.max(MIN_NODE_GAP * 0.65, (prev.size + curr.size) * 1.7);
+      const gap = curr.x - prev.x;
+
+      if (gap < minGap) {
+        const push = (minGap - gap) / 2;
+        prev.x -= push;
+        curr.x += push;
+      }
+    }
+
+    for (let i = sortedIds.length - 2; i >= 0; i--) {
+      const curr = positions.get(sortedIds[i])!;
+      const next = positions.get(sortedIds[i + 1])!;
+      const minGap = Math.max(MIN_NODE_GAP * 0.65, (curr.size + next.size) * 1.7);
+      const gap = next.x - curr.x;
+
+      if (gap < minGap) {
+        const push = (minGap - gap) / 2;
+        curr.x -= push;
+        next.x += push;
+      }
+    }
+  }
+
+  const anchorCenter =
+    sortedIds.reduce((sum, nodeId) => sum + (anchorXByNode.get(nodeId) ?? 0), 0) / sortedIds.length;
+  const currentCenter =
+    sortedIds.reduce((sum, nodeId) => sum + positions.get(nodeId)!.x, 0) / sortedIds.length;
+  const recenterDelta = currentCenter - anchorCenter;
+
+  for (const nodeId of sortedIds) {
+    const pos = positions.get(nodeId)!;
+    pos.x = clamp(pos.x - recenterDelta, -MAX_X, MAX_X);
+  }
 }
 
 /**
@@ -195,6 +281,7 @@ function initGridPositions(graph: KnowledgeGraph): Map<string, TreeNodePosition>
 export function calculateTreeLayout(graph: KnowledgeGraph): Map<string, TreeNodePosition> {
   // 1. Start with grid layout (provides good X distribution)
   const positions = initGridPositions(graph);
+  const nodeIdsByLayer = buildLayerNodeIds(graph);
   const { childrenByParent, parentsByChild } = buildHierarchyMaps(graph);
 
   // 2. Add organic jitter to avoid rigid grid appearance
@@ -269,49 +356,7 @@ export function calculateTreeLayout(graph: KnowledgeGraph): Map<string, TreeNode
     }
   }
 
-  // 4. Build adjacency list for connected nodes (non-hierarchy only)
-  const adjacencies = new Map<string, string[]>();
-  for (const node of graph.nodes) {
-    adjacencies.set(node.id, []);
-  }
-  for (const rel of graph.relationships) {
-    if (rel.type !== 'CONTAINS' && rel.type !== 'DEFINES') {
-      if (adjacencies.has(rel.sourceId) && adjacencies.has(rel.targetId)) {
-        adjacencies.get(rel.sourceId)!.push(rel.targetId);
-        adjacencies.get(rel.targetId)!.push(rel.sourceId);
-      }
-    }
-  }
-
-  // 5. Pull connected nodes closer in X direction (only within same or adjacent layers)
-  // This creates clusters without collapsing the overall width
-  const ITERATIONS = 8;
-  for (let iter = 0; iter < ITERATIONS; iter++) {
-    for (const [nodeId, neighbors] of adjacencies) {
-      const pos = positions.get(nodeId);
-      if (!pos || neighbors.length === 0) continue;
-
-      let avgNeighborX = 0;
-      let count = 0;
-
-      for (const neighborId of neighbors) {
-        const neighborPos = positions.get(neighborId);
-        if (neighborPos && Math.abs(neighborPos.depth - pos.depth) <= 1) {
-          avgNeighborX += neighborPos.x;
-          count++;
-        }
-      }
-
-      if (count > 0) {
-        avgNeighborX /= count;
-        // Gentle pull towards connected neighbors
-        const pullStrength = 0.08;
-        pos.x = pos.x * (1 - pullStrength) + avgNeighborX * pullStrength;
-      }
-    }
-  }
-
-  // 6. Pull childless nodes slightly toward their hierarchy parents when the
+  // 4. Pull childless nodes slightly toward their hierarchy parents when the
   // graph has enough structure information to form branches.
   for (const [nodeId, parents] of parentsByChild) {
     if (childrenByParent.has(nodeId)) continue;
@@ -328,40 +373,70 @@ export function calculateTreeLayout(graph: KnowledgeGraph): Map<string, TreeNode
     pos.x = pos.x * 0.7 + avgParentX * 0.3;
   }
 
-  // 7. Apply repulsion to prevent overlap (lightweight, only when needed)
-  for (const [idA, posA] of positions) {
-    for (const [idB, posB] of positions) {
-      if (idA >= idB) continue;
-      if (posA.depth !== posB.depth) continue; // Only within same layer
+  // 5. Keep a per-node horizontal anchor so long edges can pull nodes closer
+  // without destroying each layer's original spread.
+  const anchorXByNode = new Map<string, number>();
+  for (const [nodeId, pos] of positions) {
+    anchorXByNode.set(nodeId, pos.x);
+  }
 
-      const dx = posB.x - posA.x;
-      const dy = posB.y - posA.y;
-      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      const minDist = (posA.size + posB.size) * 2.2;
+  // 6. Relax the graph like a constrained spring system. Only X is allowed
+  // to move, so node types stay on their original Y layers.
+  const SPRING_ITERATIONS = 14;
+  for (let iter = 0; iter < SPRING_ITERATIONS; iter++) {
+    const deltaXByNode = new Map<string, number>();
 
-      if (dist < minDist) {
-        const push = ((minDist - dist) / dist) * 3;
-        const pushX = (dx / dist) * push;
-        const pushY = (dy / dist) * push;
+    for (const [nodeId, pos] of positions) {
+      const anchorX = anchorXByNode.get(nodeId) ?? pos.x;
+      const normalizedDistance = Math.min(1, Math.abs(pos.x) / MAX_X);
+      const anchorStrength = 0.05 + normalizedDistance * normalizedDistance * 0.1;
+      deltaXByNode.set(nodeId, (anchorX - pos.x) * anchorStrength);
+    }
 
-        posA.x -= pushX;
-        posA.y -= pushY;
-        posB.x += pushX;
-        posB.y += pushY;
-      }
+    for (const rel of graph.relationships) {
+      const sourcePos = positions.get(rel.sourceId);
+      const targetPos = positions.get(rel.targetId);
+      if (!sourcePos || !targetPos) continue;
+
+      const dx = targetPos.x - sourcePos.x;
+      const dy = targetPos.y - sourcePos.y;
+      const distance = Math.sqrt(dx * dx + dy * dy) || 1;
+      const restLength = getRestEdgeLength(rel.type, sourcePos, targetPos);
+      const stretch = distance - restLength;
+
+      if (stretch <= 0) continue;
+
+      const springWeight = RELATION_SPRING_WEIGHTS[rel.type] ?? 0.14;
+      const pull = stretch * springWeight * 0.08;
+      const forceX = (dx / distance) * pull;
+
+      deltaXByNode.set(rel.sourceId, (deltaXByNode.get(rel.sourceId) ?? 0) + forceX);
+      deltaXByNode.set(rel.targetId, (deltaXByNode.get(rel.targetId) ?? 0) - forceX);
+    }
+
+    for (const [nodeId, pos] of positions) {
+      const deltaX = deltaXByNode.get(nodeId) ?? 0;
+      const normalizedDistance = Math.min(1, Math.abs(pos.x) / MAX_X);
+      const edgeResistance = 1 + normalizedDistance * normalizedDistance * 4.5;
+      const maxStep = 18 - normalizedDistance * 6;
+      const step = clamp(deltaX / edgeResistance, -maxStep, maxStep);
+      pos.x = clamp(pos.x + step, -MAX_X, MAX_X);
+    }
+
+    for (const layerNodeIds of nodeIdsByLayer) {
+      enforceLayerSpacing(layerNodeIds, positions, anchorXByNode);
     }
   }
 
-  // 8. Recenter and softly clamp X so the layout keeps its breadth without
+  // 7. Recenter and softly clamp X so the layout keeps its breadth without
   // drifting too far off-canvas.
   const xValues = Array.from(positions.values()).map((pos) => pos.x);
   if (xValues.length > 0) {
     const minX = Math.min(...xValues);
     const maxX = Math.max(...xValues);
     const centerX = (minX + maxX) / 2;
-    const maxAllowed = (CANVAS_WIDTH - PADDING_X * 2) / 2;
     const halfSpan = Math.max(1, (maxX - minX) / 2);
-    const scale = halfSpan > maxAllowed ? maxAllowed / halfSpan : 1;
+    const scale = halfSpan > MAX_X ? MAX_X / halfSpan : 1;
 
     for (const pos of positions.values()) {
       pos.x = (pos.x - centerX) * scale;

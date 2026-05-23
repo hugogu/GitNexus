@@ -160,11 +160,14 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
   const handleViewModeChange = useCallback(
     (mode: 'force' | 'tree') => {
       if (mode === graphViewMode) return;
+      setSelectedNode(null);
+      setSigmaSelectedNode(null);
+      setHoveredNodeName(null);
       setGraphViewMode(mode);
       // Reset zoom when switching views
       resetZoom();
     },
-    [graphViewMode, setGraphViewMode, resetZoom],
+    [graphViewMode, resetZoom, setGraphViewMode, setSelectedNode, setSigmaSelectedNode],
   );
 
   // Expose focusNode to parent via ref
