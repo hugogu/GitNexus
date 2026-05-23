@@ -130,13 +130,18 @@ const getLayoutDuration = (nodeCount: number): number => {
 };
 
 const TREE_MAX_X = 540;
-const TREE_REPULSION_RANGE = 120;
+const TREE_MAX_Y = 400;
+const TREE_REPULSION_RANGE = 130;
 const TREE_LAYOUT_MAX_DURATION = 18000;
 const TREE_LAYOUT_STABILITY_FRAMES = 24;
 const TREE_TARGET_FRAME_MS = 32;
 const TREE_LAYOUT_MIN_DURATION = 1500;
 const TREE_FORCE_DEADZONE = 0.005;
 const TREE_VELOCITY_DEADZONE = 0.01;
+// Y is free within each layer's band; gravity + boundary resistance keep layers separate
+const TREE_LAYER_GRAVITY = 0.04;
+const TREE_LAYER_BAND_HALF = 72; // ±72px from layer center Y
+const TREE_LAYER_BOUNDARY_RESISTANCE = 7;
 
 const TREE_EDGE_WEIGHTS: Record<string, number> = {
   CONTAINS: 0.09,
@@ -164,7 +169,8 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const layoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const effectsAnimationFrameRef = useRef<number | null>(null);
   const treeLayoutFrameRef = useRef<number | null>(null);
-  const treeVelocityRef = useRef<Map<string, number>>(new Map());
+  const treeVelocityRef = useRef<Map<string, number>>(new Map()); // vx per node
+  const treeVelocityYRef = useRef<Map<string, number>>(new Map()); // vy per node
   const treeLastTickRef = useRef<number | null>(null);
   const treeAccumulatorRef = useRef(0);
   const treeLayoutStartRef = useRef<number | null>(null);
@@ -236,6 +242,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     treeLayoutStartRef.current = null;
     treeStableFramesRef.current = 0;
     treeVelocityRef.current.clear();
+    treeVelocityYRef.current.clear();
     setIsLayoutRunning(false);
 
     if (refresh) {
@@ -582,6 +589,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         treeLayoutFrameRef.current = null;
       }
       treeVelocityRef.current.clear();
+      treeVelocityYRef.current.clear();
       if (layoutTimeoutRef.current) {
         clearTimeout(layoutTimeoutRef.current);
       }
@@ -598,16 +606,25 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
 
       stopAllLayouts(false);
 
-      const nodesByLayer = new Map<number, string[]>();
+      // Compute each layer's Y center from initial anchor positions
+      const layerYSum = new Map<number, number>();
+      const layerYCount = new Map<number, number>();
+
       graph.forEachNode((nodeId, attrs) => {
         const layer = attrs.treeLayer ?? 0;
-        const bucket = nodesByLayer.get(layer) ?? [];
-        bucket.push(nodeId);
-        nodesByLayer.set(layer, bucket);
+        const ay = attrs.treeAnchorY ?? attrs.y;
+        layerYSum.set(layer, (layerYSum.get(layer) ?? 0) + ay);
+        layerYCount.set(layer, (layerYCount.get(layer) ?? 0) + 1);
         treeVelocityRef.current.set(nodeId, 0);
+        treeVelocityYRef.current.set(nodeId, 0);
         graph.setNodeAttribute(nodeId, 'x', attrs.treeAnchorX ?? attrs.x);
-        graph.setNodeAttribute(nodeId, 'y', attrs.treeAnchorY ?? attrs.y);
+        graph.setNodeAttribute(nodeId, 'y', ay);
       });
+
+      const layerCenterY = new Map<number, number>();
+      for (const [layer, sum] of layerYSum) {
+        layerCenterY.set(layer, sum / (layerYCount.get(layer) ?? 1));
+      }
 
       setIsLayoutRunning(true);
 
@@ -643,17 +660,22 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         treeAccumulatorRef.current -= simulationSteps * TREE_TARGET_FRAME_MS;
         const dtScale = 0.6;
 
-        const deltaXByNode = new Map<string, number>();
+        // --- Accumulate forces ---
+        const forceX = new Map<string, number>();
+        const forceY = new Map<string, number>();
+
+        // 1. Layer gravity: soft pull toward each layer's Y band center
         graph.forEachNode((nodeId, attrs) => {
-          const anchorX = attrs.treeAnchorX ?? attrs.x;
-          deltaXByNode.set(nodeId, (anchorX - attrs.x) * 0.008 * dtScale);
-          graph.setNodeAttribute(nodeId, 'y', attrs.treeAnchorY ?? attrs.y);
+          const layer = attrs.treeLayer ?? 0;
+          const centerY = layerCenterY.get(layer) ?? attrs.y;
+          forceX.set(nodeId, 0);
+          forceY.set(nodeId, (centerY - attrs.y) * TREE_LAYER_GRAVITY * dtScale);
         });
 
+        // 2. Edge springs in 2D: edges attract connected nodes in both X and Y
         graph.forEachEdge((edge, edgeAttrs, source, target, sourceAttrs, targetAttrs) => {
           const dx = targetAttrs.x - sourceAttrs.x;
-          const dy =
-            (targetAttrs.treeAnchorY ?? targetAttrs.y) - (sourceAttrs.treeAnchorY ?? sourceAttrs.y);
+          const dy = targetAttrs.y - sourceAttrs.y;
           const distance = Math.sqrt(dx * dx + dy * dy) || 1;
           const layerGap = Math.abs((targetAttrs.treeLayer ?? 0) - (sourceAttrs.treeLayer ?? 0));
           const restLength =
@@ -664,105 +686,115 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
           if (stretch <= 0) return;
 
           const weight = TREE_EDGE_WEIGHTS[edgeAttrs.relationType] ?? 0.18;
-          const forceX = (dx / distance) * stretch * weight * 0.02 * dtScale;
+          const fx = (dx / distance) * stretch * weight * 0.025 * dtScale;
+          // Y spring is weaker to avoid fighting layer gravity
+          const fy = (dy / distance) * stretch * weight * 0.012 * dtScale;
 
-          deltaXByNode.set(source, (deltaXByNode.get(source) ?? 0) + forceX);
-          deltaXByNode.set(target, (deltaXByNode.get(target) ?? 0) - forceX);
+          forceX.set(source, (forceX.get(source) ?? 0) + fx);
+          forceY.set(source, (forceY.get(source) ?? 0) + fy);
+          forceX.set(target, (forceX.get(target) ?? 0) - fx);
+          forceY.set(target, (forceY.get(target) ?? 0) - fy);
         });
 
-        for (const layerNodeIds of nodesByLayer.values()) {
-          const sortedIds = [...layerNodeIds].sort(
-            (a, b) => graph.getNodeAttribute(a, 'x') - graph.getNodeAttribute(b, 'x'),
-          );
+        // 3. Node repulsion in 2D: all pairs within range (cross-layer included)
+        // Sort by X for O(n·k) early-exit: once dx > range, all further pairs are too far
+        const nodeList = graph.nodes().map((id) => {
+          const a = graph.getNodeAttributes(id);
+          return { id, x: a.x, y: a.y, size: a.size ?? 6 };
+        });
+        nodeList.sort((a, b) => a.x - b.x);
 
-          for (let i = 0; i < sortedIds.length; i++) {
-            const nodeA = sortedIds[i];
-            const attrsA = graph.getNodeAttributes(nodeA);
+        for (let i = 0; i < nodeList.length; i++) {
+          const nodeA = nodeList[i];
+          for (let j = i + 1; j < nodeList.length; j++) {
+            const nodeB = nodeList[j];
+            const dx = nodeB.x - nodeA.x;
+            if (dx > TREE_REPULSION_RANGE) break; // X-sorted: all further pairs are also too far
 
-            for (let j = i + 1; j < sortedIds.length; j++) {
-              const nodeB = sortedIds[j];
-              const attrsB = graph.getNodeAttributes(nodeB);
-              const dx = attrsB.x - attrsA.x;
+            const dy = nodeB.y - nodeA.y;
+            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+            if (dist > TREE_REPULSION_RANGE) continue;
 
-              if (dx > TREE_REPULSION_RANGE) break;
-
-              const distance = Math.max(1, dx);
-              const minGap = Math.max(28, (attrsA.size + attrsB.size) * 1.8);
-              let repulsion = (1 / (distance + 8) - 1 / (TREE_REPULSION_RANGE + 8)) * 180 * dtScale;
-
-              if (distance < minGap) {
-                repulsion += (minGap - distance) * 0.1 * dtScale;
-              }
-
-              if (repulsion <= 0) continue;
-
-              deltaXByNode.set(nodeA, (deltaXByNode.get(nodeA) ?? 0) - repulsion);
-              deltaXByNode.set(nodeB, (deltaXByNode.get(nodeB) ?? 0) + repulsion);
+            const minGap = Math.max(28, (nodeA.size + nodeB.size) * 1.8);
+            let repulsion = (1 / (dist + 8) - 1 / (TREE_REPULSION_RANGE + 8)) * 180 * dtScale;
+            if (dist < minGap) {
+              repulsion += (minGap - dist) * 0.1 * dtScale;
             }
+            if (repulsion <= 0) continue;
+
+            const fx = (dx / dist) * repulsion;
+            const fy = (dy / dist) * repulsion;
+
+            forceX.set(nodeA.id, (forceX.get(nodeA.id) ?? 0) - fx);
+            forceY.set(nodeA.id, (forceY.get(nodeA.id) ?? 0) - fy);
+            forceX.set(nodeB.id, (forceX.get(nodeB.id) ?? 0) + fx);
+            forceY.set(nodeB.id, (forceY.get(nodeB.id) ?? 0) + fy);
           }
         }
 
+        // --- Apply forces: velocity integration with boundary resistance ---
         let totalVelocity = 0;
         let maxVelocity = 0;
         let activeNodes = 0;
+
         for (let simulationStep = 0; simulationStep < simulationSteps; simulationStep++) {
           totalVelocity = 0;
           maxVelocity = 0;
           activeNodes = 0;
-          graph.forEachNode((nodeId, attrs) => {
-            const forceX = deltaXByNode.get(nodeId) ?? 0;
-            const currentVelocity = treeVelocityRef.current.get(nodeId) ?? 0;
-            const normalizedDistance = Math.min(1, Math.abs(attrs.x) / TREE_MAX_X);
-            const edgeResistance = 1 + normalizedDistance * normalizedDistance * 4;
-            const rawVelocity = (currentVelocity + forceX / edgeResistance) * 0.62;
-            const nextVelocity =
-              Math.abs(forceX) < TREE_FORCE_DEADZONE &&
-              Math.abs(rawVelocity) < TREE_VELOCITY_DEADZONE
-                ? 0
-                : clamp(rawVelocity, -3, 3);
-            const nextX = clamp(attrs.x + nextVelocity, -TREE_MAX_X, TREE_MAX_X);
 
-            treeVelocityRef.current.set(nodeId, nextVelocity);
-            totalVelocity += Math.abs(nextVelocity);
-            maxVelocity = Math.max(maxVelocity, Math.abs(nextVelocity));
+          graph.forEachNode((nodeId, attrs) => {
+            const fx = forceX.get(nodeId) ?? 0;
+            const fy = forceY.get(nodeId) ?? 0;
+            const vx0 = treeVelocityRef.current.get(nodeId) ?? 0;
+            const vy0 = treeVelocityYRef.current.get(nodeId) ?? 0;
+
+            // X boundary resistance: grows as node approaches canvas edge
+            const normX = Math.min(1, Math.abs(attrs.x) / TREE_MAX_X);
+            const resistX = 1 + normX * normX * 4;
+
+            // Y boundary resistance: grows as node drifts from its layer band center
+            const layer = attrs.treeLayer ?? 0;
+            const centerY = layerCenterY.get(layer) ?? attrs.y;
+            const yOffset = attrs.y - centerY;
+            const normY = Math.min(1, Math.abs(yOffset) / TREE_LAYER_BAND_HALF);
+            const resistY = 1 + normY * normY * TREE_LAYER_BOUNDARY_RESISTANCE;
+
+            const rawVx = (vx0 + fx / resistX) * 0.62;
+            const rawVy = (vy0 + fy / resistY) * 0.62;
+            const newVx =
+              Math.abs(fx) < TREE_FORCE_DEADZONE && Math.abs(rawVx) < TREE_VELOCITY_DEADZONE
+                ? 0
+                : clamp(rawVx, -3, 3);
+            const newVy =
+              Math.abs(fy) < TREE_FORCE_DEADZONE && Math.abs(rawVy) < TREE_VELOCITY_DEADZONE
+                ? 0
+                : clamp(rawVy, -2, 2);
+
+            treeVelocityRef.current.set(nodeId, newVx);
+            treeVelocityYRef.current.set(nodeId, newVy);
+
+            const speed = Math.sqrt(newVx * newVx + newVy * newVy);
+            totalVelocity += speed;
+            maxVelocity = Math.max(maxVelocity, speed);
             if (
-              Math.abs(nextVelocity) > TREE_VELOCITY_DEADZONE ||
-              Math.abs(forceX) > TREE_FORCE_DEADZONE
+              speed > TREE_VELOCITY_DEADZONE ||
+              Math.abs(fx) > TREE_FORCE_DEADZONE ||
+              Math.abs(fy) > TREE_FORCE_DEADZONE
             ) {
               activeNodes += 1;
             }
-            graph.setNodeAttribute(nodeId, 'x', nextX);
-            graph.setNodeAttribute(nodeId, 'y', attrs.treeAnchorY ?? attrs.y);
-          });
 
-          for (const layerNodeIds of nodesByLayer.values()) {
-            const sortedIds = [...layerNodeIds].sort(
-              (a, b) => graph.getNodeAttribute(a, 'x') - graph.getNodeAttribute(b, 'x'),
+            graph.setNodeAttribute(nodeId, 'x', clamp(attrs.x + newVx, -TREE_MAX_X, TREE_MAX_X));
+            graph.setNodeAttribute(
+              nodeId,
+              'y',
+              clamp(
+                attrs.y + newVy,
+                centerY - TREE_LAYER_BAND_HALF,
+                centerY + TREE_LAYER_BAND_HALF,
+              ),
             );
-
-            for (let i = 1; i < sortedIds.length; i++) {
-              const leftId = sortedIds[i - 1];
-              const rightId = sortedIds[i];
-              const leftAttrs = graph.getNodeAttributes(leftId);
-              const rightAttrs = graph.getNodeAttributes(rightId);
-              const minGap = Math.max(32, (leftAttrs.size + rightAttrs.size) * 1.7);
-              const gap = rightAttrs.x - leftAttrs.x;
-
-              if (gap < minGap - 1.5) {
-                const push = ((minGap - gap) / 2) * 0.18;
-                graph.setNodeAttribute(
-                  leftId,
-                  'x',
-                  clamp(leftAttrs.x - push, -TREE_MAX_X, TREE_MAX_X),
-                );
-                graph.setNodeAttribute(
-                  rightId,
-                  'x',
-                  clamp(rightAttrs.x + push, -TREE_MAX_X, TREE_MAX_X),
-                );
-              }
-            }
-          }
+          });
         }
 
         sigmaRef.current?.refresh();
