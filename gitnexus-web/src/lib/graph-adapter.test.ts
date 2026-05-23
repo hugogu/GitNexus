@@ -36,14 +36,16 @@ describe('knowledgeGraphToTreeGraphology', () => {
     const folderAttrs = sigmaGraph.getNodeAttributes('folder');
     const fileAttrs = sigmaGraph.getNodeAttributes('file');
 
-    // Root should be above folder
-    expect(rootAttrs.y).toBeLessThan(folderAttrs.y);
-    // Folder should be above file
+    // In type-layer layout, Y coordinates group nodes by type layer:
+    // Layer 0 (Project/Folder) < Layer 1 (File)
+    expect(rootAttrs.y).toBeLessThan(fileAttrs.y);
     expect(folderAttrs.y).toBeLessThan(fileAttrs.y);
 
-    // Root should be largest
-    expect(rootAttrs.size).toBeGreaterThan(folderAttrs.size);
-    expect(folderAttrs.size).toBeGreaterThan(fileAttrs.size);
+    // Nodes within the same layer should be spread horizontally
+    expect(Math.abs(rootAttrs.x - folderAttrs.x)).toBeGreaterThan(50);
+
+    // Root should be largest (layer 0 vs layer 1 vs layer 2)
+    expect(rootAttrs.size).toBeGreaterThan(fileAttrs.size);
   });
 
   it('should style hierarchy edges differently from cross-cutting edges', () => {
@@ -62,6 +64,21 @@ describe('knowledgeGraphToTreeGraphology', () => {
       if (attrs.relationType === 'CONTAINS') {
         expect(attrs.isHierarchyEdge).toBe(true);
       } else if (attrs.relationType === 'CALLS') {
+        expect(attrs.isHierarchyEdge).toBe(false);
+      }
+    });
+  });
+
+  it('should treat imports as cross-cutting edges in tree view', () => {
+    const graph: KnowledgeGraph = {
+      nodes: [makeNode('a', 'File', 'a.ts'), makeNode('b', 'File', 'b.ts')],
+      relationships: [{ id: 'r1', type: 'IMPORTS', sourceId: 'a', targetId: 'b' }],
+    };
+
+    const sigmaGraph = knowledgeGraphToTreeGraphology(graph, 'alphabetical');
+
+    sigmaGraph.forEachEdge((edge, attrs) => {
+      if (attrs.relationType === 'IMPORTS') {
         expect(attrs.isHierarchyEdge).toBe(false);
       }
     });

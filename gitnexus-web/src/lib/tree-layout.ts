@@ -9,75 +9,61 @@ export interface TreeNodePosition {
   depth: number;
 }
 
-const HIERARCHY_RELATIONS = new Set(['CONTAINS', 'DEFINES', 'IMPORTS']);
+/**
+ * Maps node types to display layers in the tree view.
+ * Layer 0 = top (containers), Layer 3 = bottom (functions/methods).
+ */
+const TYPE_TO_LAYER: Record<string, number> = {
+  // Layer 0: Structural containers
+  Project: 0,
+  Package: 0,
+  Module: 0,
+  Folder: 0,
+  Namespace: 0,
 
-const ROOT_TYPES = new Set(['Project', 'Package', 'Module', 'Folder']);
+  // Layer 1: Files
+  File: 1,
+  Section: 1,
 
-const LEVEL_RANGES = [
-  { minY: 0, maxY: 300 },
-  { minY: 350, maxY: 650 },
-  { minY: 700, maxY: 1000 },
-  { minY: 1050, maxY: 1300 },
-  { minY: 1350, maxY: 1550 },
-  { minY: 1600, maxY: 1750 },
-];
+  // Layer 2: Type definitions
+  Class: 2,
+  Interface: 2,
+  Enum: 2,
+  Type: 2,
+  Struct: 2,
+  Trait: 2,
+  Union: 2,
+  Record: 2,
+  Typedef: 2,
+  Template: 2,
 
-const ROOT_SPACING = 400;
-const MIN_LEAF_SPACING = 80;
+  // Layer 3: Functions / Methods
+  Function: 3,
+  Method: 3,
+  Impl: 3,
+  Delegate: 3,
+  Constructor: 3,
+};
 
-function deterministicHash(str: string): number {
-  let hash = 5381;
-  for (let i = 0; i < str.length; i++) {
-    hash = (hash << 5) + hash + str.charCodeAt(i);
-    hash |= 0; // Convert to 32-bit integer
-  }
-  return (Math.abs(hash) % 10000) / 10000;
-}
+/** Fallback layer for unmapped types. */
+const DEFAULT_LAYER = 1;
 
-function getLevelRange(depth: number): { minY: number; maxY: number } {
-  if (depth < LEVEL_RANGES.length) return LEVEL_RANGES[depth];
-  const last = LEVEL_RANGES[LEVEL_RANGES.length - 1];
-  const extraDepth = depth - LEVEL_RANGES.length + 1;
-  return {
-    minY: last.maxY + 50 + (extraDepth - 1) * 200,
-    maxY: last.maxY + 250 + (extraDepth - 1) * 200,
-  };
-}
+/** Base Y coordinate for each layer. */
+const LAYER_Y_BASE = [0, 220, 440, 660];
 
-function calculateY(nodeId: string, depth: number, degree: number): number {
-  const range = getLevelRange(depth);
-  const rangeHeight = range.maxY - range.minY;
-  const hashOffset = deterministicHash(nodeId) * rangeHeight * 0.6;
-  const degreeOffset = Math.min(degree / 20, 1) * rangeHeight * 0.2;
-  return range.minY + hashOffset + degreeOffset;
-}
+/** Max vertical jitter within a layer. */
+const LAYER_JITTER = 80;
 
-function calculateNodeSize(depth: number, nodeType: NodeLabel): number {
-  const baseSize = NODE_SIZES[nodeType] || 8;
-  const depthMultiplier = Math.max(0.3, 1 - depth * 0.15);
-  return baseSize * depthMultiplier;
-}
+/** Minimum horizontal spacing between nodes. */
+const MIN_NODE_SPACING = 70;
 
-function buildTreeStructure(graph: KnowledgeGraph) {
-  const parentToChildren = new Map<string, string[]>();
-  const childToParent = new Map<string, string>();
-  const nodeMap = new Map<string, GraphNode>();
+/** Target width for the widest layer. */
+const TARGET_LAYER_WIDTH = 2800;
 
-  for (const node of graph.nodes) {
-    nodeMap.set(node.id, node);
-  }
-
-  for (const rel of graph.relationships) {
-    if (HIERARCHY_RELATIONS.has(rel.type)) {
-      if (!parentToChildren.has(rel.sourceId)) {
-        parentToChildren.set(rel.sourceId, []);
-      }
-      parentToChildren.get(rel.sourceId)!.push(rel.targetId);
-      childToParent.set(rel.targetId, rel.sourceId);
-    }
-  }
-
-  return { parentToChildren, childToParent, nodeMap };
+function calculateNodeSize(layer: number, nodeType: NodeLabel): number {
+  const baseSize = NODE_SIZES[nodeType] || 6;
+  const layerMultiplier = Math.max(0.6, 1 - layer * 0.12);
+  return baseSize * layerMultiplier;
 }
 
 function calculateDegrees(graph: KnowledgeGraph): Map<string, number> {
@@ -97,26 +83,13 @@ function calculateDegrees(graph: KnowledgeGraph): Map<string, number> {
   return degrees;
 }
 
-function getSubtreeWidth(
-  nodeId: string,
-  parentToChildren: Map<string, string[]>,
-  cache: Map<string, number>,
-): number {
-  if (cache.has(nodeId)) return cache.get(nodeId)!;
-
-  const children = parentToChildren.get(nodeId) || [];
-  if (children.length === 0) {
-    cache.set(nodeId, MIN_LEAF_SPACING);
-    return MIN_LEAF_SPACING;
+function deterministicHash(str: string): number {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) + hash + str.charCodeAt(i);
+    hash |= 0;
   }
-
-  let width = 0;
-  for (const child of children) {
-    width += getSubtreeWidth(child, parentToChildren, cache);
-  }
-
-  cache.set(nodeId, width);
-  return width;
+  return (Math.abs(hash) % 10000) / 10000;
 }
 
 export function calculateTreeLayout(
@@ -124,115 +97,55 @@ export function calculateTreeLayout(
   sortMode: 'alphabetical' | 'degree',
 ): Map<string, TreeNodePosition> {
   const positions = new Map<string, TreeNodePosition>();
-  const { parentToChildren, childToParent, nodeMap } = buildTreeStructure(graph);
   const degrees = calculateDegrees(graph);
-  const widthCache = new Map<string, number>();
 
-  // Find root nodes
-  const roots: string[] = [];
+  // 1. Group nodes by layer
+  const nodesByLayer: GraphNode[][] = [[], [], [], []];
+
   for (const node of graph.nodes) {
-    if (!childToParent.has(node.id) && ROOT_TYPES.has(node.label)) {
-      roots.push(node.id);
+    const layer = TYPE_TO_LAYER[node.label] ?? DEFAULT_LAYER;
+    if (layer >= 0 && layer < 4) {
+      nodesByLayer[layer].push(node);
     }
   }
 
-  // Fallback: if no ROOT_TYPE nodes are parentless, use the first node as root
-  // and treat others as orphans so they get distributed across Y levels
-  if (roots.length === 0) {
-    let firstRootSet = false;
-    for (const node of graph.nodes) {
-      if (!childToParent.has(node.id)) {
-        if (!firstRootSet) {
-          roots.push(node.id);
-          firstRootSet = true;
-        }
-        // Others will be handled as orphans below
-      }
-    }
-  }
-
-  // Sort roots
-  roots.sort((a, b) => {
-    const nodeA = nodeMap.get(a)!;
-    const nodeB = nodeMap.get(b)!;
-    return nodeA.properties.name.localeCompare(nodeB.properties.name);
-  });
-
-  function getSortedChildren(nodeId: string): string[] {
-    const children = parentToChildren.get(nodeId) || [];
-    return [...children].sort((a, b) => {
+  // 2. Sort each layer
+  for (let layer = 0; layer < 4; layer++) {
+    nodesByLayer[layer].sort((a, b) => {
       if (sortMode === 'alphabetical') {
-        const nodeA = nodeMap.get(a)!;
-        const nodeB = nodeMap.get(b)!;
-        return nodeA.properties.name.localeCompare(nodeB.properties.name);
-      } else {
-        const degA = degrees.get(a) || 0;
-        const degB = degrees.get(b) || 0;
-        return degB - degA;
+        return a.properties.name.localeCompare(b.properties.name);
       }
+      const degA = degrees.get(a.id) || 0;
+      const degB = degrees.get(b.id) || 0;
+      if (degA !== degB) return degB - degA;
+      return a.properties.name.localeCompare(b.properties.name);
     });
   }
 
-  function layoutNode(nodeId: string, parentX: number, availableWidth: number, depth: number) {
-    if (positions.has(nodeId)) return;
+  // 3. Calculate layer width based on node count
+  const maxNodes = Math.max(1, ...nodesByLayer.map((l) => l.length));
+  const layerWidth = Math.max(maxNodes * MIN_NODE_SPACING, TARGET_LAYER_WIDTH);
 
-    const node = nodeMap.get(nodeId);
-    if (!node) return;
+  // 4. Position nodes
+  for (let layer = 0; layer < 4; layer++) {
+    const nodes = nodesByLayer[layer];
+    if (nodes.length === 0) continue;
 
-    const degree = degrees.get(nodeId) || 0;
-    const y = calculateY(nodeId, depth, degree);
-    const size = calculateNodeSize(depth, node.label);
+    const spacing = layerWidth / (nodes.length + 1);
 
-    positions.set(nodeId, { x: parentX, y, size, depth });
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      const hash = deterministicHash(node.id);
 
-    const children = getSortedChildren(nodeId);
-    if (children.length === 0) return;
+      // X: evenly distributed across the layer width
+      const x = -layerWidth / 2 + (i + 1) * spacing;
 
-    let currentX = parentX - availableWidth / 2;
+      // Y: base layer Y + deterministic jitter
+      const y = LAYER_Y_BASE[layer] + (hash - 0.5) * LAYER_JITTER;
 
-    for (const child of children) {
-      const childWidth = getSubtreeWidth(child, parentToChildren, widthCache);
-      const childCenterX = currentX + childWidth / 2;
-      const jitter = (deterministicHash(child) - 0.5) * childWidth * 0.1;
+      const size = calculateNodeSize(layer, node.label);
 
-      layoutNode(child, childCenterX + jitter, childWidth, depth + 1);
-      currentX += childWidth;
-    }
-  }
-
-  // Layout multi-root trees
-  const totalWidth = roots.reduce(
-    (sum, root) => sum + getSubtreeWidth(root, parentToChildren, widthCache),
-    0,
-  );
-  const totalSpacing = (roots.length - 1) * ROOT_SPACING;
-  let currentX = -(totalWidth + totalSpacing) / 2;
-
-  for (const root of roots) {
-    const rootWidth = getSubtreeWidth(root, parentToChildren, widthCache);
-    const rootCenterX = currentX + rootWidth / 2;
-
-    layoutNode(root, rootCenterX, rootWidth, 0);
-    currentX += rootWidth + ROOT_SPACING;
-  }
-
-  // Handle orphan nodes (no parent, not a root type)
-  // Distribute them across multiple Y levels to avoid a single horizontal line
-  const orphanX = currentX + 200;
-  let orphanOffset = 0;
-  let orphanIndex = 0;
-  for (const node of graph.nodes) {
-    if (!positions.has(node.id)) {
-      // Cycle through depths 0, 1, 2 to ensure vertical distribution
-      const orphanDepth = orphanIndex % 3;
-      positions.set(node.id, {
-        x: orphanX + orphanOffset,
-        y: calculateY(node.id, orphanDepth, degrees.get(node.id) || 0),
-        size: calculateNodeSize(orphanDepth, node.label),
-        depth: orphanDepth,
-      });
-      orphanOffset += MIN_LEAF_SPACING;
-      orphanIndex++;
+      positions.set(node.id, { x, y, size, depth: layer });
     }
   }
 
