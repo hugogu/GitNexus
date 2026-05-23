@@ -403,6 +403,20 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
           }
         }
 
+        // Tree view: hierarchy edges are subtle, cross-cutting edges are more visible
+        const isHierarchyEdge = (data as any).isHierarchyEdge;
+        if (isHierarchyEdge !== undefined) {
+          if (isHierarchyEdge) {
+            // Subtle hierarchy edges in tree view
+            res.color = dimColor(data.color, 0.5);
+            res.size = Math.max(0.3, (data.size || 1) * 0.5);
+          } else {
+            // Cross-cutting edges are more visible
+            res.color = brightenColor(data.color, 1.2);
+            res.size = Math.max(1, (data.size || 1) * 1.2);
+          }
+        }
+
         const currentSelected = selectedNodeRef.current;
         const highlighted = highlightedRef.current;
         const blastRadius = blastRadiusRef.current;
