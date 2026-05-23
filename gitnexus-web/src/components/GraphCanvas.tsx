@@ -9,11 +9,14 @@ import {
   Pause,
   Lightbulb,
   LightbulbOff,
+  Network,
+  GitBranch,
 } from '@/lib/lucide-icons';
 import { useSigma } from '../hooks/useSigma';
 import { useAppState } from '../hooks/useAppState';
 import {
   knowledgeGraphToGraphology,
+  knowledgeGraphToTreeGraphology,
   filterGraphByDepth,
   SigmaNodeAttributes,
   SigmaEdgeAttributes,
@@ -48,6 +51,10 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     clearAICitationHighlights,
     clearBlastRadius,
     animatedNodes,
+    graphViewMode,
+    setGraphViewMode,
+    treeSortMode,
+    setTreeSortMode,
   } = useAppState();
   const [hoveredNodeName, setHoveredNodeName] = useState<string | null>(null);
 
@@ -149,7 +156,25 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     blastRadiusNodeIds: effectiveBlastRadiusNodeIds,
     animatedNodes: effectiveAnimatedNodes,
     visibleEdgeTypes,
+    layoutMode: graphViewMode,
   });
+
+  const handleViewModeChange = useCallback(
+    (mode: 'force' | 'tree') => {
+      if (mode === graphViewMode) return;
+      setGraphViewMode(mode);
+      // Reset zoom when switching views
+      resetZoom();
+    },
+    [graphViewMode, setGraphViewMode, resetZoom],
+  );
+
+  const handleSortModeChange = useCallback(
+    (mode: 'alphabetical' | 'degree') => {
+      setTreeSortMode(mode);
+    },
+    [setTreeSortMode],
+  );
 
   // Expose focusNode to parent via ref
   useImperativeHandle(
@@ -174,25 +199,28 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
   useEffect(() => {
     if (!graph) return;
 
-    // Build communityMemberships map from MEMBER_OF relationships
-    // MEMBER_OF edges: nodeId -> communityId (stored as targetId)
-    const communityMemberships = new Map<string, number>();
-    graph.relationships.forEach((rel) => {
-      if (rel.type === 'MEMBER_OF') {
-        // Find the community node to get its index
-        const communityNode = nodeById.get(rel.targetId);
-        if (communityNode && communityNode.label === 'Community') {
-          // Extract community index from id (e.g., "comm_5" -> 5)
-          const numericPart = rel.targetId.replace('comm_', '');
-          const communityIdx = /^\d+$/.test(numericPart) ? parseInt(numericPart, 10) : 0;
-          communityMemberships.set(rel.sourceId, communityIdx);
-        }
-      }
-    });
+    let sigmaGraph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>;
 
-    const sigmaGraph = knowledgeGraphToGraphology(graph, communityMemberships);
+    if (graphViewMode === 'tree') {
+      sigmaGraph = knowledgeGraphToTreeGraphology(graph, treeSortMode);
+    } else {
+      // Build community memberships map from MEMBER_OF relationships
+      const communityMemberships = new Map<string, number>();
+      graph.relationships.forEach((rel) => {
+        if (rel.type === 'MEMBER_OF') {
+          const communityNode = nodeById.get(rel.targetId);
+          if (communityNode && communityNode.label === 'Community') {
+            const numericPart = rel.targetId.replace('comm_', '');
+            const communityIdx = /^\d+$/.test(numericPart) ? parseInt(numericPart, 10) : 0;
+            communityMemberships.set(rel.sourceId, communityIdx);
+          }
+        }
+      });
+      sigmaGraph = knowledgeGraphToGraphology(graph, communityMemberships);
+    }
+
     setSigmaGraph(sigmaGraph);
-  }, [graph, nodeById, setSigmaGraph]);
+  }, [graph, nodeById, setSigmaGraph, graphViewMode, treeSortMode]);
 
   // Update node visibility when filters change
   useEffect(() => {
@@ -244,6 +272,58 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
           }}
         />
       </div>
+
+      {/* View Mode Tabs */}
+      <div className="absolute top-4 left-1/2 z-20 flex -translate-x-1/2 gap-1 rounded-lg border border-border-subtle bg-elevated/90 p-1 backdrop-blur-sm">
+        <button
+          onClick={() => handleViewModeChange('force')}
+          className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+            graphViewMode === 'force'
+              ? 'bg-accent text-white'
+              : 'text-text-secondary hover:bg-hover hover:text-text-primary'
+          }`}
+        >
+          <Network className="h-3.5 w-3.5" />
+          力导向图
+        </button>
+        <button
+          onClick={() => handleViewModeChange('tree')}
+          className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+            graphViewMode === 'tree'
+              ? 'bg-accent text-white'
+              : 'text-text-secondary hover:bg-hover hover:text-text-primary'
+          }`}
+        >
+          <GitBranch className="h-3.5 w-3.5" />
+          树形图
+        </button>
+      </div>
+
+      {/* Tree Sort Toggle */}
+      {graphViewMode === 'tree' && (
+        <div className="absolute top-14 left-1/2 z-20 flex -translate-x-1/2 gap-1 rounded-lg border border-border-subtle bg-elevated/90 p-1 backdrop-blur-sm">
+          <button
+            onClick={() => handleSortModeChange('alphabetical')}
+            className={`rounded-md px-2.5 py-1 text-xs transition-all ${
+              treeSortMode === 'alphabetical'
+                ? 'bg-accent/20 text-accent'
+                : 'text-text-secondary hover:bg-hover'
+            }`}
+          >
+            按字母
+          </button>
+          <button
+            onClick={() => handleSortModeChange('degree')}
+            className={`rounded-md px-2.5 py-1 text-xs transition-all ${
+              treeSortMode === 'degree'
+                ? 'bg-accent/20 text-accent'
+                : 'text-text-secondary hover:bg-hover'
+            }`}
+          >
+            按调用次数
+          </button>
+        </div>
+      )}
 
       {/* Sigma container */}
       <div
