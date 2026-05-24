@@ -310,21 +310,31 @@ export const knowledgeGraphToGraphology = (
     IMPLEMENTS: { color: '#be185d', sizeMultiplier: 0.9 }, // Pink - interface implementation
   };
 
-  knowledgeGraph.relationships.forEach((rel) => {
-    if (graph.hasNode(rel.sourceId) && graph.hasNode(rel.targetId)) {
-      if (!graph.hasEdge(rel.sourceId, rel.targetId)) {
-        const style = EDGE_STYLES[rel.type] || { color: '#4a4a5a', sizeMultiplier: 0.5 };
-        const curvature = 0.12 + Math.random() * 0.08;
+  // Two-pass insertion so hierarchy/DEFINES edges are drawn first (behind)
+  // and cross-edges (CALLS, IMPORTS, EXTENDS) are drawn on top.
+  const BACKGROUND_EDGE_TYPES = new Set(['CONTAINS', 'DEFINES', 'HAS_METHOD', 'HAS_PROPERTY']);
 
-        graph.addEdge(rel.sourceId, rel.targetId, {
-          size: edgeBaseSize * style.sizeMultiplier,
-          color: style.color,
-          relationType: rel.type,
-          type: 'curved',
-          curvature: curvature,
-        });
-      }
-    }
+  const addEdge = (rel: (typeof knowledgeGraph.relationships)[number]) => {
+    if (!graph.hasNode(rel.sourceId) || !graph.hasNode(rel.targetId)) return;
+    if (graph.hasEdge(rel.sourceId, rel.targetId)) return;
+    const style = EDGE_STYLES[rel.type] || { color: '#4a4a5a', sizeMultiplier: 0.5 };
+    const curvature = 0.12 + Math.random() * 0.08;
+    graph.addEdge(rel.sourceId, rel.targetId, {
+      size: edgeBaseSize * style.sizeMultiplier,
+      color: style.color,
+      relationType: rel.type,
+      type: 'curved',
+      curvature,
+    });
+  };
+
+  // Pass 1: background (hierarchy) edges — rendered behind
+  knowledgeGraph.relationships.forEach((rel) => {
+    if (BACKGROUND_EDGE_TYPES.has(rel.type)) addEdge(rel);
+  });
+  // Pass 2: foreground (cross) edges — rendered on top
+  knowledgeGraph.relationships.forEach((rel) => {
+    if (!BACKGROUND_EDGE_TYPES.has(rel.type)) addEdge(rel);
   });
 
   return graph;
@@ -381,26 +391,29 @@ export const knowledgeGraphToTreeGraphology = (
     IMPLEMENTS: { color: EDGE_INFO.IMPLEMENTS.color, sizeMultiplier: 0.9 },
   };
 
+  // Two-pass insertion: hierarchy edges first (rendered behind), cross-edges on top.
+  const addTreeEdge = (rel: (typeof knowledgeGraph.relationships)[number]) => {
+    if (!graph.hasNode(rel.sourceId) || !graph.hasNode(rel.targetId)) return;
+    if (graph.hasEdge(rel.sourceId, rel.targetId)) return;
+    const isHierarchy = HIERARCHY_EDGE_STYLES[rel.type] !== undefined;
+    const style = isHierarchy
+      ? HIERARCHY_EDGE_STYLES[rel.type]
+      : CROSS_EDGE_STYLES[rel.type] || { color: '#4a4a5a', sizeMultiplier: 0.5 };
+    graph.addEdge(rel.sourceId, rel.targetId, {
+      size: edgeBaseSize * style.sizeMultiplier,
+      color: style.color,
+      relationType: rel.type,
+      type: 'curved',
+      curvature: 0.1 + Math.random() * 0.1,
+      isHierarchyEdge: isHierarchy,
+    });
+  };
+
   knowledgeGraph.relationships.forEach((rel) => {
-    if (graph.hasNode(rel.sourceId) && graph.hasNode(rel.targetId)) {
-      if (!graph.hasEdge(rel.sourceId, rel.targetId)) {
-        const isHierarchy = HIERARCHY_EDGE_STYLES[rel.type] !== undefined;
-        const style = isHierarchy
-          ? HIERARCHY_EDGE_STYLES[rel.type]
-          : CROSS_EDGE_STYLES[rel.type] || { color: '#4a4a5a', sizeMultiplier: 0.5 };
-
-        const curvature = 0.1 + Math.random() * 0.1;
-
-        graph.addEdge(rel.sourceId, rel.targetId, {
-          size: edgeBaseSize * style.sizeMultiplier,
-          color: style.color,
-          relationType: rel.type,
-          type: 'curved',
-          curvature: curvature,
-          isHierarchyEdge: isHierarchy,
-        });
-      }
-    }
+    if (HIERARCHY_EDGE_STYLES[rel.type] !== undefined) addTreeEdge(rel);
+  });
+  knowledgeGraph.relationships.forEach((rel) => {
+    if (HIERARCHY_EDGE_STYLES[rel.type] === undefined) addTreeEdge(rel);
   });
 
   return graph;
@@ -457,25 +470,29 @@ export const knowledgeGraphToCirclesGraphology = (
     IMPLEMENTS: { color: EDGE_INFO.IMPLEMENTS.color, sizeMultiplier: 0.9 },
   };
 
-  knowledgeGraph.relationships.forEach((rel) => {
-    if (graph.hasNode(rel.sourceId) && graph.hasNode(rel.targetId)) {
-      if (!graph.hasEdge(rel.sourceId, rel.targetId)) {
-        const isHierarchy = HIERARCHY_EDGE_STYLES[rel.type] !== undefined;
-        const style = isHierarchy
-          ? HIERARCHY_EDGE_STYLES[rel.type]
-          : CROSS_EDGE_STYLES[rel.type] || { color: '#4a4a5a', sizeMultiplier: 0.5 };
-        const curvature = 0.1 + Math.random() * 0.1;
+  // Two-pass insertion: hierarchy edges first (rendered behind), cross-edges on top.
+  const addCirclesEdge = (rel: (typeof knowledgeGraph.relationships)[number]) => {
+    if (!graph.hasNode(rel.sourceId) || !graph.hasNode(rel.targetId)) return;
+    if (graph.hasEdge(rel.sourceId, rel.targetId)) return;
+    const isHierarchy = HIERARCHY_EDGE_STYLES[rel.type] !== undefined;
+    const style = isHierarchy
+      ? HIERARCHY_EDGE_STYLES[rel.type]
+      : CROSS_EDGE_STYLES[rel.type] || { color: '#4a4a5a', sizeMultiplier: 0.5 };
+    graph.addEdge(rel.sourceId, rel.targetId, {
+      size: edgeBaseSize * style.sizeMultiplier,
+      color: style.color,
+      relationType: rel.type,
+      type: 'curved',
+      curvature: 0.1 + Math.random() * 0.1,
+      isHierarchyEdge: isHierarchy,
+    });
+  };
 
-        graph.addEdge(rel.sourceId, rel.targetId, {
-          size: edgeBaseSize * style.sizeMultiplier,
-          color: style.color,
-          relationType: rel.type,
-          type: 'curved',
-          curvature,
-          isHierarchyEdge: isHierarchy,
-        });
-      }
-    }
+  knowledgeGraph.relationships.forEach((rel) => {
+    if (HIERARCHY_EDGE_STYLES[rel.type] !== undefined) addCirclesEdge(rel);
+  });
+  knowledgeGraph.relationships.forEach((rel) => {
+    if (HIERARCHY_EDGE_STYLES[rel.type] === undefined) addCirclesEdge(rel);
   });
 
   return graph;
