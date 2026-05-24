@@ -1045,6 +1045,54 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       // Compute ring target radii and centre Y (all rings are centred at 0,0)
       const ringTargetR = CIRCLES_RING_RADII as unknown as number[];
 
+      // ---------------------------------------------------------------------------
+      // Adaptive physics parameters — scale to graph size.
+      //
+      // For large graphs the two most expensive passes are:
+      //   • Repulsion: O(n × k) where k = neighbours in the sweep window
+      //     (can be hundreds when nodes are dense on a ring arc).
+      //   • Angular spread: O(k log k) per ring — O(n log n) total.
+      //
+      // Neither is needed for layout correctness: gravity pulls nodes to their
+      // ring, edge springs cluster connected nodes angularly.  Repulsion and
+      // spread are purely cosmetic polish — worth skipping at large n.
+      // ---------------------------------------------------------------------------
+      const nodeCount = graph.order;
+      const isLargeGraph = nodeCount > 5000;
+      const isMediumGraph = nodeCount > 1500;
+
+      // Repulsion range — 0 means skip the pass entirely.
+      const effectiveRepulsionRange = isLargeGraph
+        ? 0
+        : isMediumGraph
+          ? 70
+          : CIRCLES_REPULSION_RANGE;
+
+      // Higher damping → nodes settle in fewer frames (faster convergence).
+      const dampingFactor = isLargeGraph ? 0.48 : isMediumGraph ? 0.56 : 0.62;
+
+      // Higher velocity cap → each frame moves nodes further (faster convergence).
+      const velocityCap = isLargeGraph ? 12 : 5;
+
+      // Fewer simulation sub-steps per rAF tick to keep frames fast for large graphs.
+      const maxSimSteps = isLargeGraph ? 1 : 2;
+
+      // Tighter per-frame budget for repulsion sweep when range > 0.
+      const useAngularSpread = !isLargeGraph;
+
+      // Max wall-clock budget: large graphs settle faster with aggressive damping.
+      const effectiveMaxDuration = isLargeGraph
+        ? 8000
+        : isMediumGraph
+          ? 14000
+          : CIRCLES_LAYOUT_MAX_DURATION;
+
+      // Early-stop velocity thresholds — looser for large graphs (good-enough sooner).
+      const stopMaxVelocity = isLargeGraph ? 0.12 : 0.022;
+      const stopAvgVelocity = isLargeGraph ? 0.06 : 0.016;
+      const stopActiveNodeFraction = isLargeGraph ? 0.03 : 0.008;
+      const stopStabilityFrames = isLargeGraph ? 10 : CIRCLES_LAYOUT_STABILITY_FRAMES;
+
       // Pre-position nodes at their anchor and initialise velocities
       graph.forEachNode((nodeId, attrs) => {
         const ax = attrs.circlesAnchorX ?? attrs.x;
@@ -1083,7 +1131,7 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         }
 
         const simulationSteps = Math.min(
-          2,
+          maxSimSteps,
           Math.floor(circlesAccumulatorRef.current / TREE_TARGET_FRAME_MS),
         );
         circlesAccumulatorRef.current -= simulationSteps * TREE_TARGET_FRAME_MS;
@@ -1155,76 +1203,87 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
           }
         });
 
-        // 3. 2D repulsion (shared logic with tree view, different range constant).
-        const nodeList = graph.nodes().map((id) => {
-          const a = graph.getNodeAttributes(id);
-          return { id, x: a.x, y: a.y, size: a.size ?? 6, ring: a.circlesRing ?? 0 };
-        });
-        nodeList.sort((a, b) => a.x - b.x);
+        // 3. 2D repulsion — skipped for large graphs (effectiveRepulsionRange = 0).
+        //    For large graphs, gravity + edge springs are sufficient; the O(n×k)
+        //    repulsion sweep is the dominant per-frame cost and not worth the
+        //    quality gain when nodes are already tiny.
+        if (effectiveRepulsionRange > 0) {
+          const nodeList = graph.nodes().map((id) => {
+            const a = graph.getNodeAttributes(id);
+            return { id, x: a.x, y: a.y, size: a.size ?? 6, ring: a.circlesRing ?? 0 };
+          });
+          nodeList.sort((a, b) => a.x - b.x);
 
-        for (let i = 0; i < nodeList.length; i++) {
-          const nodeA = nodeList[i];
-          for (let j = i + 1; j < nodeList.length; j++) {
-            const nodeB = nodeList[j];
-            const dx = nodeB.x - nodeA.x;
-            if (dx > CIRCLES_REPULSION_RANGE) break;
+          for (let i = 0; i < nodeList.length; i++) {
+            const nodeA = nodeList[i];
+            for (let j = i + 1; j < nodeList.length; j++) {
+              const nodeB = nodeList[j];
+              const dx = nodeB.x - nodeA.x;
+              if (dx > effectiveRepulsionRange) break;
 
-            const dy = nodeB.y - nodeA.y;
-            const dist2 = dx * dx + dy * dy;
-            const distVal = Math.sqrt(dist2) || 1;
-            if (distVal > CIRCLES_REPULSION_RANGE) continue;
+              const dy = nodeB.y - nodeA.y;
+              const dist2 = dx * dx + dy * dy;
+              const distVal = Math.sqrt(dist2) || 1;
+              if (distVal > effectiveRepulsionRange) continue;
 
-            const sameRing = nodeA.ring === nodeB.ring;
-            const repulsionStrength = sameRing ? 100 : 28;
-            const minGap = Math.max(28, (nodeA.size + nodeB.size) * 1.8);
-            let repulsion =
-              (1 / (distVal + 8) - 1 / (CIRCLES_REPULSION_RANGE + 8)) * repulsionStrength * dtScale;
-            if (distVal < minGap && sameRing) repulsion += (minGap - distVal) * 0.1 * dtScale;
-            if (repulsion <= 0) continue;
+              const sameRing = nodeA.ring === nodeB.ring;
+              const repulsionStrength = sameRing ? 100 : 28;
+              const minGap = Math.max(28, (nodeA.size + nodeB.size) * 1.8);
+              let repulsion =
+                (1 / (distVal + 8) - 1 / (effectiveRepulsionRange + 8)) *
+                repulsionStrength *
+                dtScale;
+              if (distVal < minGap && sameRing) repulsion += (minGap - distVal) * 0.1 * dtScale;
+              if (repulsion <= 0) continue;
 
-            const fx = (dx / distVal) * repulsion;
-            const fy = (dy / distVal) * repulsion;
-            forceX.set(nodeA.id, (forceX.get(nodeA.id) ?? 0) - fx);
-            forceY.set(nodeA.id, (forceY.get(nodeA.id) ?? 0) - fy);
-            forceX.set(nodeB.id, (forceX.get(nodeB.id) ?? 0) + fx);
-            forceY.set(nodeB.id, (forceY.get(nodeB.id) ?? 0) + fy);
+              const fx = (dx / distVal) * repulsion;
+              const fy = (dy / distVal) * repulsion;
+              forceX.set(nodeA.id, (forceX.get(nodeA.id) ?? 0) - fx);
+              forceY.set(nodeA.id, (forceY.get(nodeA.id) ?? 0) - fy);
+              forceX.set(nodeB.id, (forceX.get(nodeB.id) ?? 0) + fx);
+              forceY.set(nodeB.id, (forceY.get(nodeB.id) ?? 0) + fy);
+            }
           }
         }
 
-        // 4. Angular spread: equalise angular density within each ring.
-        //    F_tangential = dθ * k * (-y/r, x/r)   [r-independent arc-length form]
-        const spreadByRing = new Map<
-          number,
-          Array<{ id: string; angle: number; x: number; y: number }>
-        >();
-        graph.forEachNode((nodeId, attrs) => {
-          const ring = attrs.circlesRing ?? 0;
-          if (!spreadByRing.has(ring)) spreadByRing.set(ring, []);
-          spreadByRing.get(ring)!.push({
-            id: nodeId,
-            angle: Math.atan2(attrs.y, attrs.x),
-            x: attrs.x,
-            y: attrs.y,
+        // 4. Angular spread — skipped for large graphs.
+        //    Sorting each ring's nodes every frame is O(k log k); for ring 3
+        //    with 15k+ nodes this costs several ms/frame.  For large graphs
+        //    edge springs already provide angular clustering.
+        if (useAngularSpread) {
+          const spreadByRing = new Map<
+            number,
+            Array<{ id: string; angle: number; x: number; y: number }>
+          >();
+          graph.forEachNode((nodeId, attrs) => {
+            const ring = attrs.circlesRing ?? 0;
+            if (!spreadByRing.has(ring)) spreadByRing.set(ring, []);
+            spreadByRing.get(ring)!.push({
+              id: nodeId,
+              angle: Math.atan2(attrs.y, attrs.x),
+              x: attrs.x,
+              y: attrs.y,
+            });
           });
-        });
 
-        for (const [, ringNodes] of spreadByRing) {
-          if (ringNodes.length < 2) continue;
-          ringNodes.sort((a, b) => a.angle - b.angle);
-          const count = ringNodes.length;
-          for (let i = 0; i < count; i++) {
-            const { id, angle, x, y } = ringNodes[i];
-            const idealAngle = ((i + 0.5) / count) * Math.PI * 2 - Math.PI;
-            let dAngle = idealAngle - angle;
-            while (dAngle > Math.PI) dAngle -= Math.PI * 2;
-            while (dAngle < -Math.PI) dAngle += Math.PI * 2;
-            const r = Math.sqrt(x * x + y * y) || 1;
-            // Tangential unit vector: (-y/r, x/r)
-            const tx = -y / r;
-            const ty = x / r;
-            const fMag = dAngle * CIRCLES_ANGULAR_SPREAD * dtScale;
-            forceX.set(id, (forceX.get(id) ?? 0) + tx * fMag);
-            forceY.set(id, (forceY.get(id) ?? 0) + ty * fMag);
+          for (const [, ringNodes] of spreadByRing) {
+            if (ringNodes.length < 2) continue;
+            ringNodes.sort((a, b) => a.angle - b.angle);
+            const count = ringNodes.length;
+            for (let i = 0; i < count; i++) {
+              const { id, angle, x, y } = ringNodes[i];
+              const idealAngle = ((i + 0.5) / count) * Math.PI * 2 - Math.PI;
+              let dAngle = idealAngle - angle;
+              while (dAngle > Math.PI) dAngle -= Math.PI * 2;
+              while (dAngle < -Math.PI) dAngle += Math.PI * 2;
+              const r = Math.sqrt(x * x + y * y) || 1;
+              // Tangential unit vector: (-y/r, x/r)
+              const tx = -y / r;
+              const ty = x / r;
+              const fMag = dAngle * CIRCLES_ANGULAR_SPREAD * dtScale;
+              forceX.set(id, (forceX.get(id) ?? 0) + tx * fMag);
+              forceY.set(id, (forceY.get(id) ?? 0) + ty * fMag);
+            }
           }
         }
 
@@ -1252,16 +1311,16 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
 
             // Soft-wall gravity (force 1) already handles radial boundary
             // enforcement — no separate resistance decomposition needed.
-            const rawVx = (vx0 + fx) * 0.62;
-            const rawVy = (vy0 + fy) * 0.62;
+            const rawVx = (vx0 + fx) * dampingFactor;
+            const rawVy = (vy0 + fy) * dampingFactor;
             const newVx =
               Math.abs(fx) < CIRCLES_FORCE_DEADZONE && Math.abs(rawVx) < CIRCLES_VELOCITY_DEADZONE
                 ? 0
-                : clamp(rawVx, -5, 5);
+                : clamp(rawVx, -velocityCap, velocityCap);
             const newVy =
               Math.abs(fy) < CIRCLES_FORCE_DEADZONE && Math.abs(rawVy) < CIRCLES_VELOCITY_DEADZONE
                 ? 0
-                : clamp(rawVy, -5, 5);
+                : clamp(rawVy, -velocityCap, velocityCap);
 
             circlesVelocityXRef.current.set(nodeId, newVx);
             circlesVelocityYRef.current.set(nodeId, newVy);
@@ -1299,9 +1358,9 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
 
         if (
           elapsed >= CIRCLES_LAYOUT_MIN_DURATION &&
-          maxVelocity < 0.022 &&
-          activeNodes <= Math.max(2, Math.floor(graph.order * 0.008)) &&
-          averageVelocity < 0.016
+          maxVelocity < stopMaxVelocity &&
+          activeNodes <= Math.max(2, Math.floor(graph.order * stopActiveNodeFraction)) &&
+          averageVelocity < stopAvgVelocity
         ) {
           circlesStableFramesRef.current += 1;
         } else {
@@ -1309,8 +1368,8 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         }
 
         if (
-          circlesStableFramesRef.current >= CIRCLES_LAYOUT_STABILITY_FRAMES ||
-          elapsed >= CIRCLES_LAYOUT_MAX_DURATION
+          circlesStableFramesRef.current >= stopStabilityFrames ||
+          elapsed >= effectiveMaxDuration
         ) {
           stopCirclesLayout(true);
           return;
