@@ -162,26 +162,40 @@ const CIRCLES_RING_COUNT = CIRCLES_RING_RADII.length;
  * overlap: current ring gaps are 150/180/200 px, so 45 px leaves 60-110 px
  * of clear air between rings.
  *
- * Nodes are HARD-CLAMPED to [targetR - BAND_HALF, targetR + BAND_HALF]
- * after each physics step, exactly as tree-view clamps nodes to their Y band.
+ * Nodes distribute within this band driven by repulsion (outward) and
+ * soft-wall gravity (inward, growing cubically near the edge).
+ * No hard clamp — nodes float freely inside the band.
  */
 const CIRCLES_BAND_HALF = 45;
 
-/** How strongly nodes are pulled back toward their target ring radius. */
-const CIRCLES_RADIAL_GRAVITY = 0.1;
+/**
+ * Base radial gravity rate.  Intentionally weak so nodes float radially
+ * under repulsion.  Effective gravity grows cubically near the band edge
+ * via CIRCLES_RADIAL_BOUNDARY_RESISTANCE:
+ *
+ *   rOffset =  0 px → k = k_base × 1    (almost no pull)
+ *   rOffset = 22 px → k ≈ k_base × 4.2  (moderate)
+ *   rOffset = 40 px → k ≈ k_base × 16   (strong)
+ *   rOffset = 45 px → k ≈ k_base × 21   (very strong — prevents crossing)
+ *
+ * Equilibrium rests at ~15-35 px from ring centre depending on local density.
+ */
+const CIRCLES_RADIAL_GRAVITY = 0.04;
 
 /**
- * Progressive resistance as a node drifts outside its ring band.
- * Mirrors TREE_LAYER_BOUNDARY_RESISTANCE.
+ * Cubic-growth multiplier near the band edge.
+ * Effective k = CIRCLES_RADIAL_GRAVITY × (1 + normR³ × this).
+ * Replaces the hard position clamp: nodes slow down smoothly at the edge
+ * instead of piling against a wall.
  */
-const CIRCLES_RADIAL_BOUNDARY_RESISTANCE = 18;
+const CIRCLES_RADIAL_BOUNDARY_RESISTANCE = 20;
 
 /**
- * Angular spread force: equalises angular density within each ring.
- * Stronger than tree-view's spread because the parent-centred initial layout
- * can produce local angular overlaps that the physics must resolve.
+ * Angular spread force: fine-tune density within each ring.
+ * Kept weak so hierarchy springs dominate angular positioning — nodes settle
+ * near their connected partners rather than being forced to even spacing.
  */
-const CIRCLES_ANGULAR_SPREAD = 0.01;
+const CIRCLES_ANGULAR_SPREAD = 0.005;
 
 /** Repulsion range — same as tree view so nodes from dense rings don't clump. */
 const CIRCLES_REPULSION_RANGE = 130;
@@ -193,12 +207,14 @@ const CIRCLES_FORCE_DEADZONE = 0.005;
 const CIRCLES_VELOCITY_DEADZONE = 0.01;
 
 const CIRCLES_EDGE_WEIGHTS: Record<string, number> = {
-  CONTAINS: 0.09,
-  DEFINES: 0.12,
+  // Hierarchy edges strengthened so parent-child angular alignment wins
+  // over the angular spread force — children cluster near their parent.
+  CONTAINS: 0.14,
+  DEFINES: 0.18,
   IMPORTS: 0.14,
   CALLS: 0.18,
-  EXTENDS: 0.13,
-  IMPLEMENTS: 0.13,
+  EXTENDS: 0.14,
+  IMPLEMENTS: 0.14,
 };
 
 // ---------------------------------------------------------------------------
@@ -1081,19 +1097,26 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         const forceX = new Map<string, number>();
         const forceY = new Map<string, number>();
 
-        // 1. Radial gravity: pull each node toward its ring's target radius.
-        //    F = (targetR - r) * k * (x/r, y/r)  [Cartesian decomposition]
+        // 1. Radial gravity with soft wall.
+        //
+        // Base gravity is weak, allowing repulsion to spread nodes radially
+        // within the band.  The effective rate grows cubically as the node
+        // approaches the band edge so nodes never cross into adjacent rings.
+        // This replaces the previous hard position clamp, which caused nodes
+        // to pile against the boundary instead of distributing within the band.
         graph.forEachNode((nodeId, attrs) => {
           const ring = attrs.circlesRing ?? 0;
           const targetR = ringTargetR[Math.min(ring, CIRCLES_RING_COUNT - 1)];
           const x = attrs.x;
           const y = attrs.y;
           const r = Math.sqrt(x * x + y * y) || 1;
-          const stretch = targetR - r; // positive = inside ring, negative = outside
-          const fx = (x / r) * stretch * CIRCLES_RADIAL_GRAVITY * dtScale;
-          const fy = (y / r) * stretch * CIRCLES_RADIAL_GRAVITY * dtScale;
-          forceX.set(nodeId, fx);
-          forceY.set(nodeId, fy);
+          const stretch = targetR - r; // positive = node inside ring, negative = outside
+          const normR = Math.min(1, Math.abs(stretch) / CIRCLES_BAND_HALF);
+          const k =
+            CIRCLES_RADIAL_GRAVITY *
+            (1 + normR * normR * normR * CIRCLES_RADIAL_BOUNDARY_RESISTANCE);
+          forceX.set(nodeId, (x / r) * stretch * k * dtScale);
+          forceY.set(nodeId, (y / r) * stretch * k * dtScale);
         });
 
         // 2. Edge springs — radial and tangential components.
@@ -1214,25 +1237,16 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
             const y = attrs.y;
             const r = Math.sqrt(x * x + y * y) || 1;
 
-            // Radial boundary resistance: grows as node drifts outside its ring band.
-            // Applied along radial direction only — tangential motion stays free.
-            const rOffset = Math.abs(r - targetR);
-            const normR = Math.min(1, rOffset / CIRCLES_BAND_HALF);
-            const resistR = 1 + normR * normR * CIRCLES_RADIAL_BOUNDARY_RESISTANCE;
-            const dotFR = (fx * x + fy * y) / r; // radial component of force
-            const finalFx = fx - (x / r) * dotFR + ((x / r) * dotFR) / resistR;
-            const finalFy = fy - (y / r) * dotFR + ((y / r) * dotFR) / resistR;
-
-            const rawVx = (vx0 + finalFx) * 0.62;
-            const rawVy = (vy0 + finalFy) * 0.62;
+            // Soft-wall gravity (force 1) already handles radial boundary
+            // enforcement — no separate resistance decomposition needed.
+            const rawVx = (vx0 + fx) * 0.62;
+            const rawVy = (vy0 + fy) * 0.62;
             const newVx =
-              Math.abs(finalFx) < CIRCLES_FORCE_DEADZONE &&
-              Math.abs(rawVx) < CIRCLES_VELOCITY_DEADZONE
+              Math.abs(fx) < CIRCLES_FORCE_DEADZONE && Math.abs(rawVx) < CIRCLES_VELOCITY_DEADZONE
                 ? 0
                 : clamp(rawVx, -3, 3);
             const newVy =
-              Math.abs(finalFy) < CIRCLES_FORCE_DEADZONE &&
-              Math.abs(rawVy) < CIRCLES_VELOCITY_DEADZONE
+              Math.abs(fy) < CIRCLES_FORCE_DEADZONE && Math.abs(rawVy) < CIRCLES_VELOCITY_DEADZONE
                 ? 0
                 : clamp(rawVy, -2, 2);
 
@@ -1244,22 +1258,24 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
             maxVelocity = Math.max(maxVelocity, speed);
             if (
               speed > CIRCLES_VELOCITY_DEADZONE ||
-              Math.abs(finalFx) > CIRCLES_FORCE_DEADZONE ||
-              Math.abs(finalFy) > CIRCLES_FORCE_DEADZONE
+              Math.abs(fx) > CIRCLES_FORCE_DEADZONE ||
+              Math.abs(fy) > CIRCLES_FORCE_DEADZONE
             ) {
               activeNodes += 1;
             }
 
             const newX = x + newVx;
             const newY = y + newVy;
-            // Hard-clamp to ring band — mirrors tree-view's Y-band clamping.
-            // This is the primary mechanism that keeps rings visually distinct:
-            // nodes cannot cross into adjacent rings regardless of force magnitude.
+            // Wide safety clamp (1.5 × band_half): the soft-wall gravity keeps
+            // nodes inside [targetR ± BAND_HALF] naturally.  This catches only
+            // extreme numerical edge cases (e.g. very large forces on first frame).
             const newR = Math.sqrt(newX * newX + newY * newY) || 1;
-            const clampedR = clamp(newR, targetR - CIRCLES_BAND_HALF, targetR + CIRCLES_BAND_HALF);
-            const radialScale = clampedR / newR;
-            graph.setNodeAttribute(nodeId, 'x', newX * radialScale);
-            graph.setNodeAttribute(nodeId, 'y', newY * radialScale);
+            const safeMin = Math.max(1, targetR - CIRCLES_BAND_HALF * 1.5);
+            const safeMax = targetR + CIRCLES_BAND_HALF * 1.5;
+            const safeR = clamp(newR, safeMin, safeMax);
+            const safeScale = safeR / newR;
+            graph.setNodeAttribute(nodeId, 'x', newX * safeScale);
+            graph.setNodeAttribute(nodeId, 'y', newY * safeScale);
           });
         }
 
