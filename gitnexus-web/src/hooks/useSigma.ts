@@ -1068,11 +1068,13 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
           ? 70
           : CIRCLES_REPULSION_RANGE;
 
-      // Higher damping → nodes settle in fewer frames (faster convergence).
-      const dampingFactor = isLargeGraph ? 0.48 : isMediumGraph ? 0.56 : 0.62;
+      // Damping: moderate for large graphs so nodes don't overshoot but still
+      // settle within the time budget.  Very aggressive damping (0.48) causes
+      // nodes to stop mid-path before reaching equilibrium.
+      const dampingFactor = isLargeGraph ? 0.58 : isMediumGraph ? 0.58 : 0.62;
 
       // Higher velocity cap → each frame moves nodes further (faster convergence).
-      const velocityCap = isLargeGraph ? 12 : 5;
+      const velocityCap = isLargeGraph ? 10 : 5;
 
       // Fewer simulation sub-steps per rAF tick to keep frames fast for large graphs.
       const maxSimSteps = isLargeGraph ? 1 : 2;
@@ -1080,18 +1082,20 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       // Tighter per-frame budget for repulsion sweep when range > 0.
       const useAngularSpread = !isLargeGraph;
 
-      // Max wall-clock budget: large graphs settle faster with aggressive damping.
+      // Max wall-clock budget.  Large graphs skip the expensive passes so each
+      // frame is fast (full 60 fps); 30 s × 60 fps = 1 800 frames is enough to
+      // converge 20 k+ node layouts with only gravity + edge springs.
       const effectiveMaxDuration = isLargeGraph
-        ? 8000
+        ? 30000
         : isMediumGraph
-          ? 14000
+          ? 18000
           : CIRCLES_LAYOUT_MAX_DURATION;
 
-      // Early-stop velocity thresholds — looser for large graphs (good-enough sooner).
-      const stopMaxVelocity = isLargeGraph ? 0.12 : 0.022;
-      const stopAvgVelocity = isLargeGraph ? 0.06 : 0.016;
-      const stopActiveNodeFraction = isLargeGraph ? 0.03 : 0.008;
-      const stopStabilityFrames = isLargeGraph ? 10 : CIRCLES_LAYOUT_STABILITY_FRAMES;
+      // Early-stop velocity thresholds.
+      const stopMaxVelocity = isLargeGraph ? 0.05 : 0.022;
+      const stopAvgVelocity = isLargeGraph ? 0.03 : 0.016;
+      const stopActiveNodeFraction = isLargeGraph ? 0.02 : 0.008;
+      const stopStabilityFrames = isLargeGraph ? 20 : CIRCLES_LAYOUT_STABILITY_FRAMES;
 
       // Pre-position nodes at their anchor and initialise velocities
       graph.forEachNode((nodeId, attrs) => {
