@@ -11,12 +11,14 @@ import {
   LightbulbOff,
   Network,
   GitBranch,
+  Target,
 } from '@/lib/lucide-icons';
 import { useSigma } from '../hooks/useSigma';
 import { useAppState } from '../hooks/useAppState';
 import {
   knowledgeGraphToGraphology,
   knowledgeGraphToTreeGraphology,
+  knowledgeGraphToCirclesGraphology,
   filterGraphByDepth,
   SigmaNodeAttributes,
   SigmaEdgeAttributes,
@@ -158,7 +160,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
   });
 
   const handleViewModeChange = useCallback(
-    (mode: 'force' | 'tree') => {
+    (mode: 'force' | 'tree' | 'circles') => {
       if (mode === graphViewMode) return;
       setSelectedNode(null);
       setSigmaSelectedNode(null);
@@ -197,6 +199,8 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
 
     if (graphViewMode === 'tree') {
       sigmaGraph = knowledgeGraphToTreeGraphology(graph);
+    } else if (graphViewMode === 'circles') {
+      sigmaGraph = knowledgeGraphToCirclesGraphology(graph);
     } else {
       // Build community memberships map from MEMBER_OF relationships
       const communityMemberships = new Map<string, number>();
@@ -290,6 +294,17 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
         >
           <GitBranch className="h-3.5 w-3.5" />
           Tree View
+        </button>
+        <button
+          onClick={() => handleViewModeChange('circles')}
+          className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+            graphViewMode === 'circles'
+              ? 'bg-accent text-white'
+              : 'text-text-secondary hover:bg-hover hover:text-text-primary'
+          }`}
+        >
+          <Target className="h-3.5 w-3.5" />
+          Circles
         </button>
       </div>
 

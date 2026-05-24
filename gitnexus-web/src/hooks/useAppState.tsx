@@ -124,8 +124,8 @@ interface AppState {
   setDepthFilter: (depth: number | null) => void;
 
   // Graph view mode
-  graphViewMode: 'force' | 'tree';
-  setGraphViewMode: (mode: 'force' | 'tree') => void;
+  graphViewMode: 'force' | 'tree' | 'circles';
+  setGraphViewMode: (mode: 'force' | 'tree' | 'circles') => void;
 
   // Query state
   highlightedNodeIds: Set<string>;

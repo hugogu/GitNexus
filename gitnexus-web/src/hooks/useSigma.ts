@@ -62,7 +62,7 @@ interface UseSigmaOptions {
   blastRadiusNodeIds?: Set<string>;
   animatedNodes?: Map<string, NodeAnimation>;
   visibleEdgeTypes?: EdgeType[];
-  layoutMode?: 'force' | 'tree';
+  layoutMode?: 'force' | 'tree' | 'circles';
 }
 
 interface UseSigmaReturn {
@@ -148,6 +148,55 @@ const TREE_LAYER_BOUNDARY_RESISTANCE = 10; // progressive resistance near band e
 // the hierarchy springs and push edge-parented children away from their parents.
 const TREE_SPREAD_STRENGTH = 0.003;
 
+// ---------------------------------------------------------------------------
+// Circles View constants
+// ---------------------------------------------------------------------------
+
+/** Target radius for each ring — must match CIRCLES_RING_RADII in circles-layout.ts */
+const CIRCLES_RING_RADII = [90, 240, 420, 620] as const;
+const CIRCLES_RING_COUNT = CIRCLES_RING_RADII.length;
+
+/** Half-width of the allowed radial band around each ring centre. */
+const CIRCLES_BAND_HALF = 70;
+
+/** How strongly nodes are pulled back toward their target ring radius. */
+const CIRCLES_RADIAL_GRAVITY = 0.06;
+
+/**
+ * Progressive resistance as a node drifts outside its ring band.
+ * Mirrors TREE_LAYER_BOUNDARY_RESISTANCE.
+ */
+const CIRCLES_RADIAL_BOUNDARY_RESISTANCE = 10;
+
+/**
+ * Angular spread force: equalises angular density within each ring.
+ * Kept weak — the proportional initial layout already places nodes well.
+ */
+const CIRCLES_ANGULAR_SPREAD = 0.003;
+
+/** Max radial deviation (px) from ring centre — canvas boundary analogue. */
+const CIRCLES_MAX_R = CIRCLES_RING_RADII[CIRCLES_RING_COUNT - 1] + CIRCLES_BAND_HALF + 30;
+
+/** Repulsion range — same as tree view so nodes from dense rings don't clump. */
+const CIRCLES_REPULSION_RANGE = 130;
+
+const CIRCLES_LAYOUT_MAX_DURATION = 18000;
+const CIRCLES_LAYOUT_STABILITY_FRAMES = 24;
+const CIRCLES_LAYOUT_MIN_DURATION = 1500;
+const CIRCLES_FORCE_DEADZONE = 0.005;
+const CIRCLES_VELOCITY_DEADZONE = 0.01;
+
+const CIRCLES_EDGE_WEIGHTS: Record<string, number> = {
+  CONTAINS: 0.09,
+  DEFINES: 0.12,
+  IMPORTS: 0.14,
+  CALLS: 0.18,
+  EXTENDS: 0.13,
+  IMPLEMENTS: 0.13,
+};
+
+// ---------------------------------------------------------------------------
+
 const TREE_EDGE_WEIGHTS: Record<string, number> = {
   CONTAINS: 0.09,
   DEFINES: 0.12,
@@ -180,6 +229,15 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
   const treeAccumulatorRef = useRef(0);
   const treeLayoutStartRef = useRef<number | null>(null);
   const treeStableFramesRef = useRef(0);
+
+  // Circles layout state (mirrors tree layout state)
+  const circlesLayoutFrameRef = useRef<number | null>(null);
+  const circlesVelocityXRef = useRef<Map<string, number>>(new Map());
+  const circlesVelocityYRef = useRef<Map<string, number>>(new Map());
+  const circlesLastTickRef = useRef<number | null>(null);
+  const circlesAccumulatorRef = useRef(0);
+  const circlesLayoutStartRef = useRef<number | null>(null);
+  const circlesStableFramesRef = useRef(0);
   const [isLayoutRunning, setIsLayoutRunning] = useState(false);
   const [selectedNode, setSelectedNodeState] = useState<string | null>(null);
 
@@ -258,6 +316,25 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     }
   }, []);
 
+  const stopCirclesLayout = useCallback((refresh: boolean = false) => {
+    if (circlesLayoutFrameRef.current) {
+      cancelAnimationFrame(circlesLayoutFrameRef.current);
+      circlesLayoutFrameRef.current = null;
+    }
+    circlesLastTickRef.current = null;
+    circlesAccumulatorRef.current = 0;
+    circlesLayoutStartRef.current = null;
+    circlesStableFramesRef.current = 0;
+    circlesVelocityXRef.current.clear();
+    circlesVelocityYRef.current.clear();
+    setIsLayoutRunning(false);
+
+    if (refresh) {
+      sigmaRef.current?.refresh();
+      sigmaRef.current?.getCamera().animatedReset({ duration: 600 });
+    }
+  }, []);
+
   const stopAllLayouts = useCallback(
     (refresh: boolean = false) => {
       if (layoutTimeoutRef.current) {
@@ -271,18 +348,19 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         layoutRef.current = null;
 
         const graph = graphRef.current;
-        if (graph && options.layoutMode !== 'tree') {
+        if (graph && options.layoutMode !== 'tree' && options.layoutMode !== 'circles') {
           noverlap.assign(graph, NOVERLAP_SETTINGS);
         }
       }
 
       stopTreeLayout(false);
+      stopCirclesLayout(false);
 
       if (refresh) {
         sigmaRef.current?.refresh();
       }
     },
-    [options.layoutMode, stopTreeLayout],
+    [options.layoutMode, stopTreeLayout, stopCirclesLayout],
   );
 
   // Initialize Sigma ONCE
@@ -598,6 +676,12 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
       }
       treeVelocityRef.current.clear();
       treeVelocityYRef.current.clear();
+      if (circlesLayoutFrameRef.current) {
+        cancelAnimationFrame(circlesLayoutFrameRef.current);
+        circlesLayoutFrameRef.current = null;
+      }
+      circlesVelocityXRef.current.clear();
+      circlesVelocityYRef.current.clear();
       if (layoutTimeoutRef.current) {
         clearTimeout(layoutTimeoutRef.current);
       }
@@ -934,6 +1018,281 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     [stopAllLayouts, stopTreeLayout],
   );
 
+  const runCirclesLayout = useCallback(
+    (graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>) => {
+      if (graph.order === 0) return;
+
+      stopAllLayouts(false);
+
+      // Compute ring target radii and centre Y (all rings are centred at 0,0)
+      const ringTargetR = CIRCLES_RING_RADII as unknown as number[];
+
+      // Pre-position nodes at their anchor and initialise velocities
+      graph.forEachNode((nodeId, attrs) => {
+        const ax = attrs.circlesAnchorX ?? attrs.x;
+        const ay = attrs.circlesAnchorY ?? attrs.y;
+        graph.setNodeAttribute(nodeId, 'x', ax);
+        graph.setNodeAttribute(nodeId, 'y', ay);
+        circlesVelocityXRef.current.set(nodeId, 0);
+        circlesVelocityYRef.current.set(nodeId, 0);
+      });
+
+      setIsLayoutRunning(true);
+
+      const step = (timestamp: number) => {
+        if (!graphRef.current || graphRef.current !== graph) {
+          stopCirclesLayout(false);
+          return;
+        }
+
+        if (circlesLayoutStartRef.current === null) {
+          circlesLayoutStartRef.current = timestamp;
+        }
+
+        const frameDelta =
+          circlesLastTickRef.current === null
+            ? TREE_TARGET_FRAME_MS
+            : clamp(timestamp - circlesLastTickRef.current, 8, 64);
+        circlesLastTickRef.current = timestamp;
+        circlesAccumulatorRef.current = Math.min(
+          TREE_TARGET_FRAME_MS * 3,
+          circlesAccumulatorRef.current + frameDelta,
+        );
+
+        if (circlesAccumulatorRef.current < TREE_TARGET_FRAME_MS) {
+          circlesLayoutFrameRef.current = requestAnimationFrame(step);
+          return;
+        }
+
+        const simulationSteps = Math.min(
+          2,
+          Math.floor(circlesAccumulatorRef.current / TREE_TARGET_FRAME_MS),
+        );
+        circlesAccumulatorRef.current -= simulationSteps * TREE_TARGET_FRAME_MS;
+        const dtScale = 0.6;
+
+        // --- Accumulate forces ---
+        const forceX = new Map<string, number>();
+        const forceY = new Map<string, number>();
+
+        // 1. Radial gravity: pull each node toward its ring's target radius.
+        //    F = (targetR - r) * k * (x/r, y/r)  [Cartesian decomposition]
+        graph.forEachNode((nodeId, attrs) => {
+          const ring = attrs.circlesRing ?? 0;
+          const targetR = ringTargetR[Math.min(ring, CIRCLES_RING_COUNT - 1)];
+          const x = attrs.x;
+          const y = attrs.y;
+          const r = Math.sqrt(x * x + y * y) || 1;
+          const stretch = targetR - r; // positive = inside ring, negative = outside
+          const fx = (x / r) * stretch * CIRCLES_RADIAL_GRAVITY * dtScale;
+          const fy = (y / r) * stretch * CIRCLES_RADIAL_GRAVITY * dtScale;
+          forceX.set(nodeId, fx);
+          forceY.set(nodeId, fy);
+        });
+
+        // 2. Edge springs — radial and tangential components.
+        graph.forEachEdge((edge, edgeAttrs, source, target, sourceAttrs, targetAttrs) => {
+          const dx = targetAttrs.x - sourceAttrs.x;
+          const dy = targetAttrs.y - sourceAttrs.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+
+          const rawWeight = CIRCLES_EDGE_WEIGHTS[edgeAttrs.relationType] ?? 0.18;
+
+          // Radial spring: hierarchy edges want zero separation; cross-edges 60px rest.
+          const restLength = edgeAttrs.isHierarchyEdge ? 0 : 60;
+          const stretch = dist - restLength;
+          if (stretch > 0) {
+            const weight = edgeAttrs.isHierarchyEdge ? rawWeight : Math.min(rawWeight, 0.1);
+            const f = stretch * weight * 0.3 * dtScale;
+            const fx = (dx / dist) * f;
+            const fy = (dy / dist) * f;
+            forceX.set(source, (forceX.get(source) ?? 0) + fx);
+            forceY.set(source, (forceY.get(source) ?? 0) + fy);
+            forceX.set(target, (forceX.get(target) ?? 0) - fx);
+            forceY.set(target, (forceY.get(target) ?? 0) - fy);
+          }
+        });
+
+        // 3. 2D repulsion (shared logic with tree view, different range constant).
+        const nodeList = graph.nodes().map((id) => {
+          const a = graph.getNodeAttributes(id);
+          return { id, x: a.x, y: a.y, size: a.size ?? 6, ring: a.circlesRing ?? 0 };
+        });
+        nodeList.sort((a, b) => a.x - b.x);
+
+        for (let i = 0; i < nodeList.length; i++) {
+          const nodeA = nodeList[i];
+          for (let j = i + 1; j < nodeList.length; j++) {
+            const nodeB = nodeList[j];
+            const dx = nodeB.x - nodeA.x;
+            if (dx > CIRCLES_REPULSION_RANGE) break;
+
+            const dy = nodeB.y - nodeA.y;
+            const dist2 = dx * dx + dy * dy;
+            const distVal = Math.sqrt(dist2) || 1;
+            if (distVal > CIRCLES_REPULSION_RANGE) continue;
+
+            const sameRing = nodeA.ring === nodeB.ring;
+            const repulsionStrength = sameRing ? 100 : 28;
+            const minGap = Math.max(28, (nodeA.size + nodeB.size) * 1.8);
+            let repulsion =
+              (1 / (distVal + 8) - 1 / (CIRCLES_REPULSION_RANGE + 8)) * repulsionStrength * dtScale;
+            if (distVal < minGap && sameRing) repulsion += (minGap - distVal) * 0.1 * dtScale;
+            if (repulsion <= 0) continue;
+
+            const fx = (dx / distVal) * repulsion;
+            const fy = (dy / distVal) * repulsion;
+            forceX.set(nodeA.id, (forceX.get(nodeA.id) ?? 0) - fx);
+            forceY.set(nodeA.id, (forceY.get(nodeA.id) ?? 0) - fy);
+            forceX.set(nodeB.id, (forceX.get(nodeB.id) ?? 0) + fx);
+            forceY.set(nodeB.id, (forceY.get(nodeB.id) ?? 0) + fy);
+          }
+        }
+
+        // 4. Angular spread: equalise angular density within each ring.
+        //    F_tangential = dθ * k * (-y/r, x/r)   [r-independent arc-length form]
+        const spreadByRing = new Map<
+          number,
+          Array<{ id: string; angle: number; x: number; y: number }>
+        >();
+        graph.forEachNode((nodeId, attrs) => {
+          const ring = attrs.circlesRing ?? 0;
+          if (!spreadByRing.has(ring)) spreadByRing.set(ring, []);
+          spreadByRing.get(ring)!.push({
+            id: nodeId,
+            angle: Math.atan2(attrs.y, attrs.x),
+            x: attrs.x,
+            y: attrs.y,
+          });
+        });
+
+        for (const [, ringNodes] of spreadByRing) {
+          if (ringNodes.length < 2) continue;
+          ringNodes.sort((a, b) => a.angle - b.angle);
+          const count = ringNodes.length;
+          for (let i = 0; i < count; i++) {
+            const { id, angle, x, y } = ringNodes[i];
+            const idealAngle = ((i + 0.5) / count) * Math.PI * 2 - Math.PI;
+            let dAngle = idealAngle - angle;
+            while (dAngle > Math.PI) dAngle -= Math.PI * 2;
+            while (dAngle < -Math.PI) dAngle += Math.PI * 2;
+            const r = Math.sqrt(x * x + y * y) || 1;
+            // Tangential unit vector: (-y/r, x/r)
+            const tx = -y / r;
+            const ty = x / r;
+            const fMag = dAngle * CIRCLES_ANGULAR_SPREAD * dtScale;
+            forceX.set(id, (forceX.get(id) ?? 0) + tx * fMag);
+            forceY.set(id, (forceY.get(id) ?? 0) + ty * fMag);
+          }
+        }
+
+        // --- Apply forces with radial boundary resistance ---
+        let totalVelocity = 0;
+        let maxVelocity = 0;
+        let activeNodes = 0;
+
+        for (let _step = 0; _step < simulationSteps; _step++) {
+          totalVelocity = 0;
+          maxVelocity = 0;
+          activeNodes = 0;
+
+          graph.forEachNode((nodeId, attrs) => {
+            const fx = forceX.get(nodeId) ?? 0;
+            const fy = forceY.get(nodeId) ?? 0;
+            const vx0 = circlesVelocityXRef.current.get(nodeId) ?? 0;
+            const vy0 = circlesVelocityYRef.current.get(nodeId) ?? 0;
+
+            const ring = attrs.circlesRing ?? 0;
+            const targetR = ringTargetR[Math.min(ring, CIRCLES_RING_COUNT - 1)];
+            const x = attrs.x;
+            const y = attrs.y;
+            const r = Math.sqrt(x * x + y * y) || 1;
+
+            // Radial boundary resistance: grows as node drifts from ring band
+            const rOffset = Math.abs(r - targetR);
+            const normR = Math.min(1, rOffset / CIRCLES_BAND_HALF);
+            // Decompose resistance into radial direction (x/r, y/r)
+            const resistR = 1 + normR * normR * CIRCLES_RADIAL_BOUNDARY_RESISTANCE;
+            // Apply resistance along radial direction only; tangential stays free
+            const dotFR = (fx * x + fy * y) / r; // radial component of force
+            const resistedFx = fx - (x / r) * dotFR + ((x / r) * dotFR) / resistR;
+            const resistedFy = fy - (y / r) * dotFR + ((y / r) * dotFR) / resistR;
+
+            // Canvas boundary resistance (outside outermost ring)
+            const normCanvas = Math.min(1, r / CIRCLES_MAX_R);
+            const resistCanvas = 1 + normCanvas * normCanvas * 4;
+            const finalFx = resistedFx / resistCanvas;
+            const finalFy = resistedFy / resistCanvas;
+
+            const rawVx = (vx0 + finalFx) * 0.62;
+            const rawVy = (vy0 + finalFy) * 0.62;
+            const newVx =
+              Math.abs(finalFx) < CIRCLES_FORCE_DEADZONE &&
+              Math.abs(rawVx) < CIRCLES_VELOCITY_DEADZONE
+                ? 0
+                : clamp(rawVx, -3, 3);
+            const newVy =
+              Math.abs(finalFy) < CIRCLES_FORCE_DEADZONE &&
+              Math.abs(rawVy) < CIRCLES_VELOCITY_DEADZONE
+                ? 0
+                : clamp(rawVy, -2, 2);
+
+            circlesVelocityXRef.current.set(nodeId, newVx);
+            circlesVelocityYRef.current.set(nodeId, newVy);
+
+            const speed = Math.sqrt(newVx * newVx + newVy * newVy);
+            totalVelocity += speed;
+            maxVelocity = Math.max(maxVelocity, speed);
+            if (
+              speed > CIRCLES_VELOCITY_DEADZONE ||
+              Math.abs(finalFx) > CIRCLES_FORCE_DEADZONE ||
+              Math.abs(finalFy) > CIRCLES_FORCE_DEADZONE
+            ) {
+              activeNodes += 1;
+            }
+
+            const newX = x + newVx;
+            const newY = y + newVy;
+            // Soft clamp: don't exceed CIRCLES_MAX_R
+            const newR = Math.sqrt(newX * newX + newY * newY);
+            const scale = newR > CIRCLES_MAX_R ? CIRCLES_MAX_R / newR : 1;
+            graph.setNodeAttribute(nodeId, 'x', newX * scale);
+            graph.setNodeAttribute(nodeId, 'y', newY * scale);
+          });
+        }
+
+        sigmaRef.current?.refresh();
+
+        const averageVelocity = totalVelocity / Math.max(1, graph.order);
+        const elapsed = timestamp - (circlesLayoutStartRef.current ?? timestamp);
+
+        if (
+          elapsed >= CIRCLES_LAYOUT_MIN_DURATION &&
+          maxVelocity < 0.022 &&
+          activeNodes <= Math.max(2, Math.floor(graph.order * 0.008)) &&
+          averageVelocity < 0.016
+        ) {
+          circlesStableFramesRef.current += 1;
+        } else {
+          circlesStableFramesRef.current = 0;
+        }
+
+        if (
+          circlesStableFramesRef.current >= CIRCLES_LAYOUT_STABILITY_FRAMES ||
+          elapsed >= CIRCLES_LAYOUT_MAX_DURATION
+        ) {
+          stopCirclesLayout(true);
+          return;
+        }
+
+        circlesLayoutFrameRef.current = requestAnimationFrame(step);
+      };
+
+      circlesLayoutFrameRef.current = requestAnimationFrame(step);
+    },
+    [stopAllLayouts, stopCirclesLayout],
+  );
+
   // Run ForceAtlas2 layout
   const runLayout = useCallback(
     (graph: Graph<SigmaNodeAttributes, SigmaEdgeAttributes>) => {
@@ -984,13 +1343,22 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
 
       if (options.layoutMode === 'tree') {
         runTreeLayout(newGraph);
+      } else if (options.layoutMode === 'circles') {
+        runCirclesLayout(newGraph);
       } else {
         runLayout(newGraph);
       }
 
       sigma.getCamera().animatedReset({ duration: 500 });
     },
-    [options.layoutMode, runLayout, runTreeLayout, setSelectedNode, stopAllLayouts],
+    [
+      options.layoutMode,
+      runLayout,
+      runTreeLayout,
+      runCirclesLayout,
+      setSelectedNode,
+      stopAllLayouts,
+    ],
   );
 
   const focusNode = useCallback((nodeId: string) => {
@@ -1032,10 +1400,12 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
     if (!graph || graph.order === 0) return;
     if (options.layoutMode === 'tree') {
       runTreeLayout(graph);
+    } else if (options.layoutMode === 'circles') {
+      runCirclesLayout(graph);
     } else {
       runLayout(graph);
     }
-  }, [options.layoutMode, runLayout, runTreeLayout]);
+  }, [options.layoutMode, runLayout, runTreeLayout, runCirclesLayout]);
 
   const stopLayout = useCallback(() => {
     stopAllLayouts(true);
