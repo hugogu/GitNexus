@@ -156,26 +156,32 @@ const TREE_SPREAD_STRENGTH = 0.003;
 const CIRCLES_RING_RADII = [90, 240, 420, 620] as const;
 const CIRCLES_RING_COUNT = CIRCLES_RING_RADII.length;
 
-/** Half-width of the allowed radial band around each ring centre. */
-const CIRCLES_BAND_HALF = 70;
+/**
+ * Half-width of the allowed radial band.  Must match CIRCLES_BAND_HALF in
+ * circles-layout.ts.  Keep it small enough that adjacent ring bands never
+ * overlap: current ring gaps are 150/180/200 px, so 45 px leaves 60-110 px
+ * of clear air between rings.
+ *
+ * Nodes are HARD-CLAMPED to [targetR - BAND_HALF, targetR + BAND_HALF]
+ * after each physics step, exactly as tree-view clamps nodes to their Y band.
+ */
+const CIRCLES_BAND_HALF = 45;
 
 /** How strongly nodes are pulled back toward their target ring radius. */
-const CIRCLES_RADIAL_GRAVITY = 0.06;
+const CIRCLES_RADIAL_GRAVITY = 0.1;
 
 /**
  * Progressive resistance as a node drifts outside its ring band.
  * Mirrors TREE_LAYER_BOUNDARY_RESISTANCE.
  */
-const CIRCLES_RADIAL_BOUNDARY_RESISTANCE = 10;
+const CIRCLES_RADIAL_BOUNDARY_RESISTANCE = 18;
 
 /**
  * Angular spread force: equalises angular density within each ring.
- * Kept weak — the proportional initial layout already places nodes well.
+ * Stronger than tree-view's spread because the parent-centred initial layout
+ * can produce local angular overlaps that the physics must resolve.
  */
-const CIRCLES_ANGULAR_SPREAD = 0.003;
-
-/** Max radial deviation (px) from ring centre — canvas boundary analogue. */
-const CIRCLES_MAX_R = CIRCLES_RING_RADII[CIRCLES_RING_COUNT - 1] + CIRCLES_BAND_HALF + 30;
+const CIRCLES_ANGULAR_SPREAD = 0.01;
 
 /** Repulsion range — same as tree view so nodes from dense rings don't clump. */
 const CIRCLES_REPULSION_RANGE = 130;
@@ -1208,21 +1214,14 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
             const y = attrs.y;
             const r = Math.sqrt(x * x + y * y) || 1;
 
-            // Radial boundary resistance: grows as node drifts from ring band
+            // Radial boundary resistance: grows as node drifts outside its ring band.
+            // Applied along radial direction only — tangential motion stays free.
             const rOffset = Math.abs(r - targetR);
             const normR = Math.min(1, rOffset / CIRCLES_BAND_HALF);
-            // Decompose resistance into radial direction (x/r, y/r)
             const resistR = 1 + normR * normR * CIRCLES_RADIAL_BOUNDARY_RESISTANCE;
-            // Apply resistance along radial direction only; tangential stays free
             const dotFR = (fx * x + fy * y) / r; // radial component of force
-            const resistedFx = fx - (x / r) * dotFR + ((x / r) * dotFR) / resistR;
-            const resistedFy = fy - (y / r) * dotFR + ((y / r) * dotFR) / resistR;
-
-            // Canvas boundary resistance (outside outermost ring)
-            const normCanvas = Math.min(1, r / CIRCLES_MAX_R);
-            const resistCanvas = 1 + normCanvas * normCanvas * 4;
-            const finalFx = resistedFx / resistCanvas;
-            const finalFy = resistedFy / resistCanvas;
+            const finalFx = fx - (x / r) * dotFR + ((x / r) * dotFR) / resistR;
+            const finalFy = fy - (y / r) * dotFR + ((y / r) * dotFR) / resistR;
 
             const rawVx = (vx0 + finalFx) * 0.62;
             const rawVy = (vy0 + finalFy) * 0.62;
@@ -1253,11 +1252,14 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
 
             const newX = x + newVx;
             const newY = y + newVy;
-            // Soft clamp: don't exceed CIRCLES_MAX_R
-            const newR = Math.sqrt(newX * newX + newY * newY);
-            const scale = newR > CIRCLES_MAX_R ? CIRCLES_MAX_R / newR : 1;
-            graph.setNodeAttribute(nodeId, 'x', newX * scale);
-            graph.setNodeAttribute(nodeId, 'y', newY * scale);
+            // Hard-clamp to ring band — mirrors tree-view's Y-band clamping.
+            // This is the primary mechanism that keeps rings visually distinct:
+            // nodes cannot cross into adjacent rings regardless of force magnitude.
+            const newR = Math.sqrt(newX * newX + newY * newY) || 1;
+            const clampedR = clamp(newR, targetR - CIRCLES_BAND_HALF, targetR + CIRCLES_BAND_HALF);
+            const radialScale = clampedR / newR;
+            graph.setNodeAttribute(nodeId, 'x', newX * radialScale);
+            graph.setNodeAttribute(nodeId, 'y', newY * radialScale);
           });
         }
 

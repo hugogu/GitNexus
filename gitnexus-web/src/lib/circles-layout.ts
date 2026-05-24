@@ -19,8 +19,12 @@ export interface CirclesNodePosition {
 /** Target radius (px) for each ring.  Ring 0 is innermost. */
 export const CIRCLES_RING_RADII = [90, 240, 420, 620] as const;
 
-/** Half-width of the allowed radial band around each ring centre. */
-export const CIRCLES_BAND_HALF = 70;
+/**
+ * Half-width of the allowed radial band around each ring centre.
+ * Keep this small enough that adjacent rings never overlap.
+ * Current ring gaps: 150 / 180 / 200 px → band = 45 leaves 60-110 px of clear air.
+ */
+export const CIRCLES_BAND_HALF = 45;
 
 /** Number of rings (= number of layers). */
 export const RING_COUNT = CIRCLES_RING_RADII.length; // 4
@@ -125,16 +129,19 @@ function buildHierarchyMaps(graph: KnowledgeGraph) {
 }
 
 // ---------------------------------------------------------------------------
-// Proportional angular allocation
+// Parent-centred angular allocation
 //
-// Mirrors the proportional X allocation in tree-layout.ts, but in polar space.
-// Each parent in ring N is allocated an angular arc proportional to how many
-// direct hierarchy children it has in ring N+1.  Children start at evenly
-// spaced angles within their parent's arc.  Orphans fill a proportional arc
-// at the end (just before 2π).
+// Each parent's children are placed in an arc CENTRED on the parent's own
+// angle, with arc size proportional to child count.  This prevents the
+// sequential-concatenation bias (where the largest group's arc centre drifts
+// to 90° / 270° regardless of where the parent sits) that caused top-bottom
+// crowding in the previous sequential allocation.
+//
+// Overlapping initial arcs are fine — the physics simulation's angular spread
+// force resolves them during the simulation.
 // ---------------------------------------------------------------------------
 
-function initProportionalAngles(
+function initParentCentredAngles(
   graph: KnowledgeGraph,
   parentsByChild: Map<string, string[]>,
 ): Map<string, CirclesNodePosition> {
@@ -154,7 +161,7 @@ function initProportionalAngles(
 
   const TWO_PI = Math.PI * 2;
 
-  // --- Ring 0: sort alphabetically, evenly spaced around full circle ---
+  // --- Ring 0: sorted alphabetically, evenly spaced around full circle ---
   const ring0Nodes = [...nodesByRing[0]].sort((a, b) =>
     a.properties.name.localeCompare(b.properties.name),
   );
@@ -175,14 +182,15 @@ function initProportionalAngles(
     }
   }
 
-  // --- Rings 1-3: proportional angular slices from parents ---
+  // --- Rings 1-3: parent-centred arc placement ---
   for (let ring = 1; ring < RING_COUNT; ring++) {
     const ringNodes = nodesByRing[ring];
     if (ringNodes.length === 0) continue;
 
     const r = CIRCLES_RING_RADII[ring];
 
-    // Find each node's primary parent: placed ancestor with highest ring index.
+    // Find each node's primary parent: placed ancestor with highest ring index
+    // (so a Method prefers its Class over a distant Package).
     const assignedParent = new Map<string, string>();
     for (const node of ringNodes) {
       const parents = parentsByChild.get(node.id) ?? [];
@@ -218,29 +226,20 @@ function initProportionalAngles(
     }
     orphans.sort((a, b) => a.properties.name.localeCompare(b.properties.name));
 
-    // Sort active parents by their own angle
-    const activeParents = [...childrenOfParent.keys()].sort((a, b) => {
-      const aAngle = positions.get(a)?.angle ?? 0;
-      const bAngle = positions.get(b)?.angle ?? 0;
-      return aAngle - bAngle;
-    });
-
     const totalParented = ringNodes.length - orphans.length;
-    const parentedArc = totalParented > 0 ? TWO_PI * (totalParented / ringNodes.length) : 0;
-    const orphanArc = TWO_PI - parentedArc;
+    const parentedFraction = totalParented > 0 ? totalParented / ringNodes.length : 0;
 
-    let curAngle = 0; // Start at angle 0; wrap modulo 2π
-
-    // Place each parent's children in a sub-arc proportional to child count
-    for (const parentId of activeParents) {
-      const children = childrenOfParent.get(parentId) ?? [];
+    // Place each parent's children in an arc centred on the parent's angle.
+    // Arc size ∝ child count relative to all parented nodes.
+    for (const [parentId, children] of childrenOfParent) {
       if (children.length === 0) continue;
 
-      const slotArc = (children.length / totalParented) * parentedArc;
-      const childSpacing = slotArc / children.length;
+      const parentAngle = positions.get(parentId)?.angle ?? 0;
+      const slotArc = (children.length / totalParented) * parentedFraction * TWO_PI;
+      const startAngle = parentAngle - slotArc / 2;
 
       for (let i = 0; i < children.length; i++) {
-        const angle = curAngle + (i + 0.5) * childSpacing;
+        const angle = startAngle + (i + 0.5) * (slotArc / children.length);
         positions.set(children[i].id, {
           x: r * Math.cos(angle),
           y: r * Math.sin(angle),
@@ -249,14 +248,17 @@ function initProportionalAngles(
           angle,
         });
       }
-      curAngle += slotArc;
     }
 
-    // Orphans fill the remaining arc
-    if (orphans.length > 0 && orphanArc > 0) {
-      const orphanSpacing = orphanArc / orphans.length;
+    // Orphans: spread evenly in their proportional arc, centred at angle = π
+    // (left side), away from the 0° / ±π boundary to avoid wrapping artefacts.
+    if (orphans.length > 0) {
+      const orphanFraction = orphans.length / ringNodes.length;
+      const orphanArc = orphanFraction * TWO_PI;
+      // Centre orphan arc at π so it doesn't overlap with the typical 0° cluster
+      const orphanStart = Math.PI - orphanArc / 2;
       for (let i = 0; i < orphans.length; i++) {
-        const angle = curAngle + (i + 0.5) * orphanSpacing;
+        const angle = orphanStart + (i + 0.5) * (orphanArc / orphans.length);
         positions.set(orphans[i].id, {
           x: r * Math.cos(angle),
           y: r * Math.sin(angle),
@@ -276,7 +278,7 @@ function initProportionalAngles(
 // ---------------------------------------------------------------------------
 
 /**
- * Circles view layout: concentric rings with proportional angular allocation.
+ * Circles view layout: concentric rings with parent-centred angular allocation.
  *
  * Ring 0 (innermost) = Folders/Packages
  * Ring 1             = Files
@@ -284,61 +286,21 @@ function initProportionalAngles(
  * Ring 3 (outermost) = Functions/Methods/Variables
  *
  * Returns initial positions; the physics simulation in useSigma.ts refines
- * them using radial gravity, angular spread, and 2D repulsion.
+ * them using radial gravity + hard band clamping, angular spread, and 2D
+ * repulsion — identical in structure to the tree-view physics.
  */
 export function calculateCirclesLayout(graph: KnowledgeGraph): Map<string, CirclesNodePosition> {
   const { parentsByChild } = buildHierarchyMaps(graph);
 
-  // 1. Proportional angular allocation
-  const positions = initProportionalAngles(graph, parentsByChild);
+  // 1. Parent-centred angular allocation — no top/bottom bias
+  const positions = initParentCentredAngles(graph, parentsByChild);
 
-  // 2. Subtle radial jitter only — angular jitter would scramble hierarchy ordering
+  // 2. Subtle radial jitter only — angular jitter would fight the centred placement
   for (const [nodeId, pos] of positions) {
-    const jitter = (deterministicHash(nodeId + 'r') - 0.5) * 18;
-    const r = CIRCLES_RING_RADII[pos.ring];
-    const newR = r + jitter;
-    pos.x = newR * Math.cos(pos.angle);
-    pos.y = newR * Math.sin(pos.angle);
-  }
-
-  // 3. Structure iterations: align children angularly with their parent
-  const STRUCTURE_ITERATIONS = 5;
-  for (let iter = 0; iter < STRUCTURE_ITERATIONS; iter++) {
-    const nodeRingMap = new Map<string, number>();
-    for (const [id, pos] of positions) nodeRingMap.set(id, pos.ring);
-
-    for (const [nodeId, pos] of positions) {
-      const r = CIRCLES_RING_RADII[pos.ring] || CIRCLES_RING_RADII[RING_COUNT - 1];
-      // Re-derive angle from x/y so accumulated adjustments propagate
-      const currentAngle = Math.atan2(pos.y, pos.x);
-
-      // Gently pull toward parent's angular sector
-      const parents = parentsByChild.get(nodeId) ?? [];
-      if (parents.length === 0) continue;
-
-      const parentAngles = parents
-        .map((p) => positions.get(p))
-        .filter((p): p is CirclesNodePosition => !!p)
-        .map((p) => Math.atan2(p.y, p.x));
-
-      if (parentAngles.length === 0) continue;
-
-      // Circular mean of parent angles
-      const sinSum = parentAngles.reduce((s, a) => s + Math.sin(a), 0);
-      const cosSum = parentAngles.reduce((c, a) => c + Math.cos(a), 0);
-      const targetAngle = Math.atan2(sinSum, cosSum);
-
-      // Blend current toward target (weak pull, structure iterations handle the rest)
-      let dAngle = targetAngle - currentAngle;
-      // Normalize to [-π, π]
-      while (dAngle > Math.PI) dAngle -= Math.PI * 2;
-      while (dAngle < -Math.PI) dAngle += Math.PI * 2;
-
-      const blendedAngle = currentAngle + dAngle * 0.3;
-      pos.x = r * Math.cos(blendedAngle);
-      pos.y = r * Math.sin(blendedAngle);
-      pos.angle = blendedAngle;
-    }
+    const jitter = (deterministicHash(nodeId + 'r') - 0.5) * 10; // ±10 px
+    const r = CIRCLES_RING_RADII[pos.ring] + jitter;
+    pos.x = r * Math.cos(pos.angle);
+    pos.y = r * Math.sin(pos.angle);
   }
 
   return positions;
