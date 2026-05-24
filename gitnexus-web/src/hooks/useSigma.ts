@@ -169,52 +169,48 @@ const CIRCLES_RING_COUNT = CIRCLES_RING_RADII.length;
 const CIRCLES_BAND_HALF = 45;
 
 /**
- * Base radial gravity rate.  Intentionally weak so nodes float radially
- * under repulsion.  Effective gravity grows cubically near the band edge
- * via CIRCLES_RADIAL_BOUNDARY_RESISTANCE:
+ * Base radial gravity rate.  Effective gravity grows cubically near the band
+ * edge via CIRCLES_RADIAL_BOUNDARY_RESISTANCE:
  *
  *   rOffset =  0 px → k = k_base × 1    (almost no pull)
  *   rOffset = 22 px → k ≈ k_base × 4.2  (moderate)
  *   rOffset = 40 px → k ≈ k_base × 16   (strong)
  *   rOffset = 45 px → k ≈ k_base × 21   (very strong — prevents crossing)
- *
- * Equilibrium rests at ~15-35 px from ring centre depending on local density.
  */
-const CIRCLES_RADIAL_GRAVITY = 0.04;
+const CIRCLES_RADIAL_GRAVITY = 0.06;
 
 /**
  * Cubic-growth multiplier near the band edge.
  * Effective k = CIRCLES_RADIAL_GRAVITY × (1 + normR³ × this).
- * Replaces the hard position clamp: nodes slow down smoothly at the edge
- * instead of piling against a wall.
  */
-const CIRCLES_RADIAL_BOUNDARY_RESISTANCE = 20;
+const CIRCLES_RADIAL_BOUNDARY_RESISTANCE = 22;
 
 /**
- * Angular spread force: fine-tune density within each ring.
- * Kept weak so hierarchy springs dominate angular positioning — nodes settle
- * near their connected partners rather than being forced to even spacing.
+ * Angular spread force: kept very weak — edge springs are the primary
+ * mechanism for angular positioning.  A too-strong spread competes with
+ * springs and keeps connected nodes far apart.
  */
-const CIRCLES_ANGULAR_SPREAD = 0.005;
+const CIRCLES_ANGULAR_SPREAD = 0.002;
 
 /** Repulsion range — same as tree view so nodes from dense rings don't clump. */
 const CIRCLES_REPULSION_RANGE = 130;
 
-const CIRCLES_LAYOUT_MAX_DURATION = 18000;
+const CIRCLES_LAYOUT_MAX_DURATION = 24000;
 const CIRCLES_LAYOUT_STABILITY_FRAMES = 24;
 const CIRCLES_LAYOUT_MIN_DURATION = 1500;
 const CIRCLES_FORCE_DEADZONE = 0.005;
 const CIRCLES_VELOCITY_DEADZONE = 0.01;
 
 const CIRCLES_EDGE_WEIGHTS: Record<string, number> = {
-  // Hierarchy edges strengthened so parent-child angular alignment wins
-  // over the angular spread force — children cluster near their parent.
-  CONTAINS: 0.14,
-  DEFINES: 0.18,
-  IMPORTS: 0.14,
-  CALLS: 0.18,
-  EXTENDS: 0.14,
-  IMPLEMENTS: 0.14,
+  // Hierarchy edges: moderate — angular alignment without fighting radial gravity
+  // (rest length is now set to ring-gap distance, not zero).
+  CONTAINS: 0.18,
+  DEFINES: 0.22,
+  // Cross edges: stronger so same-ring connected nodes cluster angularly.
+  IMPORTS: 0.2,
+  CALLS: 0.24,
+  EXTENDS: 0.2,
+  IMPLEMENTS: 0.2,
 };
 
 // ---------------------------------------------------------------------------
@@ -1120,19 +1116,36 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
         });
 
         // 2. Edge springs — radial and tangential components.
+        //
+        // Rest length strategy:
+        //   Hierarchy edges (cross-ring): use the radial gap between the two
+        //     ring centres as rest length.  This means the spring only activates
+        //     when nodes are angularly misaligned — it does NOT fight radial
+        //     gravity (which was the main cause of long edges in previous builds).
+        //   Cross edges (same or different ring): rest length = 30 px so the
+        //     spring activates sooner and pulls connected nodes closer.
+        //
+        // Weight cap removed: all edges use their full weight so cross-ring
+        //   CALLS/IMPORTS springs are strong enough to pull nodes into position.
         graph.forEachEdge((edge, edgeAttrs, source, target, sourceAttrs, targetAttrs) => {
           const dx = targetAttrs.x - sourceAttrs.x;
           const dy = targetAttrs.y - sourceAttrs.y;
           const dist = Math.sqrt(dx * dx + dy * dy) || 1;
 
-          const rawWeight = CIRCLES_EDGE_WEIGHTS[edgeAttrs.relationType] ?? 0.18;
+          const rawWeight = CIRCLES_EDGE_WEIGHTS[edgeAttrs.relationType] ?? 0.2;
 
-          // Radial spring: hierarchy edges want zero separation; cross-edges 60px rest.
-          const restLength = edgeAttrs.isHierarchyEdge ? 0 : 60;
+          const sourceRing = sourceAttrs.circlesRing ?? 0;
+          const targetRing = targetAttrs.circlesRing ?? 0;
+          const restLength = edgeAttrs.isHierarchyEdge
+            ? Math.abs(
+                ringTargetR[Math.min(sourceRing, CIRCLES_RING_COUNT - 1)] -
+                  ringTargetR[Math.min(targetRing, CIRCLES_RING_COUNT - 1)],
+              )
+            : 30;
+
           const stretch = dist - restLength;
           if (stretch > 0) {
-            const weight = edgeAttrs.isHierarchyEdge ? rawWeight : Math.min(rawWeight, 0.1);
-            const f = stretch * weight * 0.3 * dtScale;
+            const f = stretch * rawWeight * 0.55 * dtScale;
             const fx = (dx / dist) * f;
             const fy = (dy / dist) * f;
             forceX.set(source, (forceX.get(source) ?? 0) + fx);
@@ -1244,11 +1257,11 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
             const newVx =
               Math.abs(fx) < CIRCLES_FORCE_DEADZONE && Math.abs(rawVx) < CIRCLES_VELOCITY_DEADZONE
                 ? 0
-                : clamp(rawVx, -3, 3);
+                : clamp(rawVx, -5, 5);
             const newVy =
               Math.abs(fy) < CIRCLES_FORCE_DEADZONE && Math.abs(rawVy) < CIRCLES_VELOCITY_DEADZONE
                 ? 0
-                : clamp(rawVy, -2, 2);
+                : clamp(rawVy, -5, 5);
 
             circlesVelocityXRef.current.set(nodeId, newVx);
             circlesVelocityYRef.current.set(nodeId, newVy);
