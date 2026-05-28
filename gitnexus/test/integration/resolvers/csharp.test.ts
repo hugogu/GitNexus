@@ -2600,3 +2600,59 @@ describe('C# namespace-as-root with no trailing newline (issue #1086)', () => {
     expect(edge!.rel.reason).toBe('csharp-scope: using');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cross-project directory ambiguity: relative namespace `using Model;` must
+// not resolve to a file in a *different* project's `Model/` directory.
+//
+// Layout: two projects — `App/` (rootNamespace=App) and `App.Tests/`
+// (rootNamespace=App.Tests).  Both have a sub-directory called `Model/`.
+// `App.Tests/Model/` sorts before `App/Model/` alphabetically (because
+// '.' < '/'), so without project-root disambiguation the suffix-based
+// resolver would incorrectly pick `App.Tests/Model/UserTest.cs` as the
+// target of `using Model;` in `App/Services/UserService.cs`, creating
+// a false IMPORTS edge from UserService.cs to UserTest.cs.
+// ---------------------------------------------------------------------------
+
+describe('C# cross-project directory ambiguity (issue #1881)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-cross-project-dir-ambiguity'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User and UserTest classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('User');
+    expect(classes).toContain('UserTest');
+    expect(classes).toContain('UserService');
+  });
+
+  it('UserService.Process() CALLS User#GetName (correct cross-project resolution)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find(
+      (c) =>
+        c.source === 'Process' && c.target === 'GetName' && c.targetFilePath.includes('App/Model'),
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('no IMPORTS edge from UserService.cs to UserTest.cs (no false cross-project edge)', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const falseEdge = imports.find(
+      (e) => e.sourceFilePath.includes('UserService') && e.targetFilePath.includes('UserTest'),
+    );
+    expect(falseEdge).toBeUndefined();
+  });
+
+  it('IMPORTS edge from UserService.cs resolves within the same App project (not App.Tests)', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const serviceImports = imports.filter((e) => e.sourceFilePath.includes('UserService'));
+    for (const edge of serviceImports) {
+      expect(edge.targetFilePath).not.toContain('App.Tests');
+    }
+  });
+});
