@@ -2655,4 +2655,68 @@ describe('C# cross-project directory ambiguity (issue #1881)', () => {
       expect(edge.targetFilePath).not.toContain('App.Tests');
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // Three-project scenario: importer (Core/) uses a shortened namespace
+  // `using Infrastructure.Model;` where the real target is in
+  // Infrastructure/Model/ and the confuser is in Infrastructure.Tests/Model/.
+  // The skip-loop context-hint heuristic ("Infrastructure" aligns with
+  // Infrastructure/Model/ but not Infrastructure.Tests/Model/) must pick
+  // the right project even though the importer (Core) is a THIRD project
+  // unrelated to both candidates.
+  // ---------------------------------------------------------------------------
+
+  it('detects Entity and EntityTest classes (three-project scenario)', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Entity');
+    expect(classes).toContain('EntityTest');
+    expect(classes).toContain('GameBoard');
+  });
+
+  it('no IMPORTS edge from GameBoard.cs to EntityTest.cs (context-hint heuristic)', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const falseEdge = imports.find(
+      (e) => e.sourceFilePath.includes('GameBoard') && e.targetFilePath.includes('EntityTest'),
+    );
+    expect(falseEdge).toBeUndefined();
+  });
+
+  it('IMPORTS edge from GameBoard.cs points to Infrastructure/Model not Infrastructure.Tests', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const boardImports = imports.filter((e) => e.sourceFilePath.includes('GameBoard'));
+    for (const edge of boardImports) {
+      expect(edge.targetFilePath).not.toContain('Infrastructure.Tests');
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Full-namespace import with dot-prefix: `using Renju.Infrastructure.Model;`
+  // from Core/ (third project). Skip=2 yields strippedHint="Renju/Infrastructure".
+  // contextEndsWithPrefix must match "Renju.Infrastructure" (dot-separated
+  // project dir name) against "Renju/Infrastructure" after dot-normalization.
+  // ---------------------------------------------------------------------------
+
+  it('detects RenjuEntity and RenjuEntityTest classes (dot-normalized hint)', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('RenjuEntity');
+    expect(classes).toContain('RenjuEntityTest');
+    expect(classes).toContain('ServiceFull');
+  });
+
+  it('no IMPORTS edge from ServiceFull.cs to RenjuEntityTest.cs (dot-normalized hint)', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const falseEdge = imports.find(
+      (e) =>
+        e.sourceFilePath.includes('ServiceFull') && e.targetFilePath.includes('RenjuEntityTest'),
+    );
+    expect(falseEdge).toBeUndefined();
+  });
+
+  it('IMPORTS from ServiceFull.cs points to Renju.Infrastructure/Model not Renju.Infrastructure.Tests', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const fullImports = imports.filter((e) => e.sourceFilePath.includes('ServiceFull'));
+    for (const edge of fullImports) {
+      expect(edge.targetFilePath).not.toContain('Renju.Infrastructure.Tests');
+    }
+  });
 });

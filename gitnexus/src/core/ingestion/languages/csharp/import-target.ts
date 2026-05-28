@@ -40,19 +40,67 @@ function projectRoot(normalizedPath: string): string {
 }
 
 /**
- * Pick the best directory-child candidate when multiple `.cs` files
- * inside directories named `dirName/` are found. Prefers the file
- * whose top-level project directory matches `fromProjectRoot`; falls
- * back to any candidate otherwise. This prevents a test-project file
- * in `Tests/Model/Foo.cs` from being chosen over the real model file
- * in `App/Model/Bar.cs` when both live in a directory named `Model/`.
+ * Returns true when `ctx` (path before a matched directory) ends with
+ * `prefix` separated by `/` or `.`.
+ *
+ * Also checks a dot-normalized form of `ctx` (replacing `.` with `/`)
+ * because C# project directory names use dots as namespace separators
+ * (e.g. `Renju.Infrastructure`) while the stripped namespace prefix uses
+ * slashes (e.g. `Renju/Infrastructure`). Without this, `using
+ * Renju.Infrastructure.Model;` would not benefit from the context hint.
+ *
+ * Examples:
+ *   "Renju.Infrastructure"       endsWith "Infrastructure"        → true
+ *   "Renju.Infrastructure"       endsWith "Renju/Infrastructure"  → true
+ *   "Renju.Infrastructure/Model" endsWith "Infrastructure/Model"  → true
+ *   "Renju.Infrastructure.Tests" endsWith "Infrastructure"        → false
+ *   "Renju.Infrastructure.Tests" endsWith "Renju/Infrastructure"  → false
+ *   "src/Infrastructure"         endsWith "Infrastructure"        → true
  */
-function pickDirectoryChild(candidates: string[], fromProjectRoot: string): string | null {
+function contextEndsWithPrefix(ctx: string, prefix: string): boolean {
+  if (ctx === prefix || ctx.endsWith('/' + prefix) || ctx.endsWith('.' + prefix)) return true;
+  // Normalize dots → slashes so "Renju.Infrastructure" matches "Renju/Infrastructure".
+  const ctxNorm = ctx.replace(/\./g, '/');
+  return ctxNorm === prefix || ctxNorm.endsWith('/' + prefix);
+}
+
+/** A candidate file for directory-based namespace resolution. */
+interface DirCandidate {
+  raw: string;
+  /** Path before the matched directory; undefined for root-anchored matches. */
+  contextBefore?: string;
+}
+
+/**
+ * Pick the best directory-child candidate when multiple `.cs` files
+ * inside directories named `dirName/` are found. Priority order:
+ *
+ * 1. Same project root as the importing file (prevents test-project files
+ *    from shadowing real model files when the importer is in the same
+ *    project as the real target).
+ * 2. Context before the matched directory ends with the stripped namespace
+ *    prefix (handles the three-project case: importer in `Core/`, real
+ *    target in `Infra/Model/`, confuser in `Infra.Tests/Model/`; the
+ *    stripped prefix `Infra` aligns with `Infra/Model/`'s context).
+ * 3. First candidate (original behaviour).
+ */
+function pickDirectoryChild(
+  candidates: DirCandidate[],
+  fromProjectRoot: string,
+  strippedHint?: string,
+): string | null {
   if (candidates.length === 0) return null;
   const sameProject = candidates.find(
-    (c) => projectRoot(c.replace(/\\/g, '/')) === fromProjectRoot,
+    (c) => projectRoot(c.raw.replace(/\\/g, '/')) === fromProjectRoot,
   );
-  return sameProject ?? candidates[0] ?? null;
+  if (sameProject) return sameProject.raw;
+  if (strippedHint) {
+    const hintMatch = candidates.find((c) =>
+      contextEndsWithPrefix((c.contextBefore ?? '').replace(/\\/g, '/'), strippedHint),
+    );
+    if (hintMatch) return hintMatch.raw;
+  }
+  return candidates[0]?.raw ?? null;
 }
 
 export function resolveCsharpImportTarget(
@@ -84,14 +132,17 @@ export function resolveCsharpImportTarget(
   // (e.g. `System/Collections/Generic/List.cs` matches namespace Generic).
   let exactFile: string | null = null;
   let suffixFile: string | null = null;
-  const dirCandidates: string[] = [];
+  const dirCandidates: DirCandidate[] = [];
   const dirPrefix = `${pathLike}/`;
   const suffixDirPrefix = `/${dirPrefix}`;
-  const fromProjectRoot = projectRoot(ctx.fromFile.replace(/\\/g, '/'));
+  const fromFileNorm = ctx.fromFile.replace(/\\/g, '/');
+  const fromProjectRoot = projectRoot(fromFileNorm);
 
   for (const raw of ctx.allFilePaths) {
     const f = raw.replace(/\\/g, '/');
     if (!f.endsWith('.cs')) continue;
+    // Never resolve a using directive to the importing file itself.
+    if (f === fromFileNorm) continue;
     if (f === `${pathLike}.cs`) {
       exactFile = raw;
       break;
@@ -111,7 +162,7 @@ export function resolveCsharpImportTarget(
       const idx = atRoot ? 0 : f.indexOf(suffixDirPrefix) + 1;
       const after = f.slice(idx + dirPrefix.length);
       if (after.length > 0 && !after.includes('/')) {
-        dirCandidates.push(raw);
+        dirCandidates.push({ raw });
       }
     }
   }
@@ -133,27 +184,39 @@ export function resolveCsharpImportTarget(
   // two, try `UserFactory.cs`.
   const segments = pathLike.split('/').filter(Boolean);
   for (let skip = 1; skip < segments.length; skip++) {
+    // Segments stripped from the front (e.g. "Infrastructure" for skip=1
+    // on `using Infrastructure.Model;`). Used as a context hint: among
+    // candidates whose paths contain `/Model/`, prefer the one whose
+    // path before `/Model/` ends with "Infrastructure". This prevents
+    // `Renju.Infrastructure.Tests/Model/` from shadowing
+    // `Renju.Infrastructure/Model/` when the importer is in a third
+    // project (`Renju.Core/`).
+    const strippedHint = segments.slice(0, skip).join('/');
     const tail = segments.slice(skip).join('/');
     if (tail === '') continue;
     const tailFile = `${tail}.cs`;
     const tailSuffix = `/${tailFile}`;
     const tailDir = `${tail}/`;
     const tailSuffixDir = `/${tailDir}`;
-    const tailCandidates: string[] = [];
+    const tailCandidates: DirCandidate[] = [];
     for (const raw of ctx.allFilePaths) {
       const f = raw.replace(/\\/g, '/');
       if (!f.endsWith('.cs')) continue;
+      if (f === fromFileNorm) continue;
       if (f === tailFile) return raw;
       if (f.endsWith(tailSuffix)) return raw;
       const atRoot = f.startsWith(tailDir);
       const atNested = f.includes(tailSuffixDir);
       if (atRoot || atNested) {
-        const idx = atRoot ? 0 : f.indexOf(tailSuffixDir) + 1;
-        const after = f.slice(idx + tailDir.length);
-        if (after.length > 0 && !after.includes('/')) tailCandidates.push(raw);
+        const matchIdx = atRoot ? 0 : f.indexOf(tailSuffixDir) + 1;
+        const contextBefore = atRoot ? '' : f.slice(0, f.indexOf(tailSuffixDir));
+        const after = f.slice(matchIdx + tailDir.length);
+        if (after.length > 0 && !after.includes('/')) {
+          tailCandidates.push({ raw, contextBefore });
+        }
       }
     }
-    const best = pickDirectoryChild(tailCandidates, fromProjectRoot);
+    const best = pickDirectoryChild(tailCandidates, fromProjectRoot, strippedHint);
     if (best !== null) return best;
   }
 
